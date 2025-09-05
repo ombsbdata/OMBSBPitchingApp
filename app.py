@@ -19,7 +19,7 @@ def load_data(file_path):
     return df
 
 # File path for 2025 Season data
-season_file_path = "Fall_2025_wRV_MASTER.CSV"
+season_file_path = "Fall_2025_wRV_MASTER.csv"
 season_df = load_data(season_file_path)
 season_df = season_df[season_df['PitcherTeam'] == 'OLE_REB']
 
@@ -31,8 +31,8 @@ for col in numeric_columns:
     season_df[col] = pd.to_numeric(season_df[col], errors='coerce')
 
 # === LOAD ROLLING AND StuffPlus DATA ===
-rolling_path = "Fall_2025_wRV_MASTER.CSV"
-class_plus_path = "Fall_2025_wRV_MASTER.CSV"
+rolling_path = "Fall_2025_wRV_MASTER.csv"
+class_plus_path = "Fall_2025_wRV_MASTER.csv"
 
 rolling_df = load_data(rolling_path)
 class_plus_df = pd.read_csv(class_plus_path)
@@ -272,14 +272,14 @@ def load_class_plus_data(file_path):
     
     return df
 
-class_plus_file_path = "Fall_2025_wRV_MASTER.CSV"
+class_plus_file_path = "Fall_2025_wRV_MASTER.csv"
 
 class_plus_df = load_class_plus_data(class_plus_file_path)
 
 
 
 
-season_class_plus_file_path = "Fall_2025_wRV_MASTER.CSV"
+season_class_plus_file_path = "Fall_2025_wRV_MASTER.csv"
 
 #
 
