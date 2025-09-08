@@ -762,6 +762,146 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
         st.error(f"An error occurred while generating rolling line graphs: {e}")
 
 
+def _normalize_block(g: pd.DataFrame, cols: list, mode: str) -> pd.DataFrame:
+    """
+    Normalize selected columns within each PitchType group.
+    mode: 'zscore', 'minmax', or 'none'
+    """
+    g = g.copy()
+    if mode == "zscore":
+        for c in cols:
+            mu = g[c].mean()
+            sd = g[c].std(ddof=0)
+            g[f"{c}_norm"] = (g[c] - mu) / sd if (sd and not np.isnan(sd)) else g[c] * 0.0
+    elif mode == "minmax":
+        for c in cols:
+            mn, mx = g[c].min(), g[c].max()
+            rng = (mx - mn)
+            g[f"{c}_norm"] = (g[c] - mn) / rng if (rng and not np.isnan(rng)) else g[c] * 0.0
+    else:
+        for c in cols:
+            g[f"{c}_norm"] = g[c]
+    return g
+
+def _overlay_date_chart(df_in: pd.DataFrame, xcol: str, pitch_types: list, metrics_keys: list,
+                        color_map: dict, norm_mode: str, window_label: str, title_suffix: str):
+    """
+    Build a single overlay chart for multiple metrics (Date-by-Date).
+    If norm_mode == 'none' and len(metrics_keys) == 2, use dual axes. Else, overlay normalized to one axis.
+    """
+    import plotly.graph_objects as go
+    gdf = df_in[df_in["PitchType"].isin(pitch_types)].copy()
+    # Normalize within PitchType so lines are comparable per type
+    blocks = []
+    for pt, g in gdf.groupby("PitchType", as_index=False):
+        blocks.append(_normalize_block(g, [f"{k}_roll" for k in metrics_keys], norm_mode))
+    gdf = pd.concat(blocks, ignore_index=True) if blocks else gdf
+
+    fig = go.Figure()
+
+    # Dual-axis path (only if exactly two metrics and no normalization requested)
+    if norm_mode == "none" and len(metrics_keys) == 2:
+        m1, m2 = metrics_keys
+        for pt in sorted(gdf["PitchType"].unique()):
+            sub = gdf[gdf["PitchType"] == pt]
+            fig.add_trace(go.Scatter(
+                x=sub[xcol], y=sub[f"{m1}_roll"], mode="lines+markers",
+                name=f"{pt} — {m1}", marker=dict(size=5),
+                line=dict(width=2, color=color_map.get(pt, "black"))
+            ))
+            fig.add_trace(go.Scatter(
+                x=sub[xcol], y=sub[f"{m2}_roll"], mode="lines+markers",
+                name=f"{pt} — {m2}", marker=dict(size=5),
+                line=dict(width=2, dash="dash"), yaxis="y2",
+                marker_color=color_map.get(pt, "black")
+            ))
+        fig.update_layout(
+            xaxis_title="Date",
+            yaxis_title=f"{metrics_keys[0]} ({window_label})",
+            yaxis2=dict(title=f"{metrics_keys[1]} ({window_label})", overlaying="y", side="right"),
+            template="plotly_white", hovermode="x unified",
+            title=f"Overlay: {metrics_keys[0]} & {metrics_keys[1]} — {title_suffix}"
+        )
+    else:
+        # Single-axis with normalized values, legend includes metric label
+        for pt in sorted(gdf["PitchType"].unique()):
+            sub = gdf[gdf["PitchType"] == pt]
+            for k in metrics_keys:
+                fig.add_trace(go.Scatter(
+                    x=sub[xcol], y=sub[f"{k}_roll_norm"], mode="lines+markers",
+                    name=f"{pt} — {k}", marker=dict(size=5),
+                    line=dict(width=2), marker_color=color_map.get(pt, "black")
+                ))
+        ylab = "Normalized Value" if norm_mode != "none" else f"Value ({window_label})"
+        fig.update_layout(
+            xaxis_title="Date", yaxis_title=ylab, template="plotly_white",
+            hovermode="x unified", title=f"Overlay: {', '.join(metrics_keys)} — {title_suffix}"
+        )
+
+    # Shade selected date/range if the global date filter is set
+    from pandas import to_datetime
+    if date_filter_option == "Single Date" and selected_date:
+        xdt = to_datetime(selected_date)
+        fig.add_vrect(x0=xdt, x1=xdt, fillcolor="gray", opacity=0.25, line_width=0)
+    elif date_filter_option == "Date Range" and start_date and end_date:
+        sdt, edt = to_datetime(start_date), to_datetime(end_date)
+        fig.add_vrect(x0=sdt, x1=edt, fillcolor="gray", opacity=0.2, line_width=0)
+
+    return fig
+
+def _overlay_pitch_chart(df_in: pd.DataFrame, xcol: str, pitch_types: list, metrics_keys: list,
+                         color_map: dict, norm_mode: str, window_label: str, title_suffix: str):
+    """
+    Build a single overlay chart for multiple metrics (Pitch-by-Pitch).
+    Same dual-axis vs normalized logic as above.
+    """
+    import plotly.graph_objects as go
+    gdf = df_in[df_in["PitchType"].isin(pitch_types)].copy()
+    blocks = []
+    for pt, g in gdf.groupby("PitchType", as_index=False):
+        blocks.append(_normalize_block(g, [f"{k}_roll" for k in metrics_keys], norm_mode))
+    gdf = pd.concat(blocks, ignore_index=True) if blocks else gdf
+
+    fig = go.Figure()
+
+    if norm_mode == "none" and len(metrics_keys) == 2:
+        m1, m2 = metrics_keys
+        for pt in sorted(gdf["PitchType"].unique()):
+            sub = gdf[gdf["PitchType"] == pt]
+            fig.add_trace(go.Scatter(
+                x=sub[xcol], y=sub[f"{m1}_roll"], mode="lines+markers",
+                name=f"{pt} — {m1}", marker=dict(size=6),
+                line=dict(width=2), marker_color=color_map.get(pt, "black")
+            ))
+            fig.add_trace(go.Scatter(
+                x=sub[xcol], y=sub[f"{m2}_roll"], mode="lines+markers",
+                name=f"{pt} — {m2}", marker=dict(size=6),
+                line=dict(width=2, dash="dash"), yaxis="y2",
+                marker_color=color_map.get(pt, "black")
+            ))
+        fig.update_layout(
+            xaxis_title="Pitch #",
+            yaxis_title=f"{metrics_keys[0]} ({window_label})",
+            yaxis2=dict(title=f"{metrics_keys[1]} ({window_label})", overlaying="y", side="right"),
+            template="plotly_white", hovermode="x unified",
+            title=f"Overlay: {metrics_keys[0]} & {metrics_keys[1]} — {title_suffix}"
+        )
+    else:
+        for pt in sorted(gdf["PitchType"].unique()):
+            sub = gdf[gdf["PitchType"] == pt]
+            for k in metrics_keys:
+                fig.add_trace(go.Scatter(
+                    x=sub[xcol], y=sub[f"{k}_roll_norm"], mode="lines+markers",
+                    name=f"{pt} — {k}", marker=dict(size=6),
+                    line=dict(width=2), marker_color=color_map.get(pt, "black")
+                ))
+        ylab = "Normalized Value" if norm_mode != "none" else f"Value ({window_label})"
+        fig.update_layout(
+            xaxis_title="Pitch #", yaxis_title=ylab, template="plotly_white",
+            hovermode="x unified", title=f"Overlay: {', '.join(metrics_keys)} — {title_suffix}"
+        )
+    return fig
+
 def render_rolling_average_charts_tab():
     """
     Flexible rolling charts:
@@ -769,6 +909,8 @@ def render_rolling_average_charts_tab():
       - Choose Date-by-Date or Pitch-by-Pitch (Single Date)
       - Pick rolling window size
       - Filter by pitch types for the lines
+      - Overlay multiple metrics on one chart (dual-axis if 2 metrics + no normalization,
+        or normalized overlays for 2+ metrics)
     """
     try:
         df = rolling_df.copy()
@@ -826,6 +968,28 @@ def render_rolling_average_charts_tab():
 
         color_map = {pt: PLOTLY_COLORS.get(pt, "black") for pt in pt_available}
 
+        # Overlay controls
+        overlay_mode = st.radio(
+            "Chart Layout",
+            ["One chart per metric", "Overlay metrics in one chart"],
+            index=0
+        )
+
+        norm_choice = "none"
+        if overlay_mode == "Overlay metrics in one chart":
+            norm_choice = st.selectbox(
+                "Normalization for overlay",
+                ["none (dual axis if 2 metrics)", "z-score (within pitch type)", "min-max [0,1] (within pitch type)"],
+                index=1
+            )
+            norm_choice = {"none (dual axis if 2 metrics)": "none",
+                           "z-score (within pitch type)": "zscore",
+                           "min-max [0,1] (within pitch type)": "minmax"}[norm_choice]
+
+        if not metrics_selected_keys:
+            st.info("Select at least one metric to plot.")
+            return
+
         if view_mode == "Date-by-Date Rolling Averages":
             window_days = st.slider("Rolling window (in days/rows)", min_value=1, max_value=30, value=7, step=1,
                                     help="Rolling window size over daily rows per pitch type.")
@@ -836,7 +1000,6 @@ def render_rolling_average_charts_tab():
                        .reset_index()
                        .sort_values(["PitchType", "Date"]))
 
-            # Keep chosen pitch types
             daily = daily[daily["PitchType"].isin(pt_selected)]
 
             # Apply rolling per pitch type
@@ -845,39 +1008,45 @@ def render_rolling_average_charts_tab():
                 g = g.sort_values("Date").copy()
                 for k in metrics_selected_keys:
                     if k in g.columns:
+                        g[k] = pd.to_numeric(g[k], errors="coerce")
                         g[f"{k}_roll"] = g[k].rolling(window=window_days, min_periods=1).mean()
                 daily_roll.append(g)
             daily_roll = pd.concat(daily_roll, ignore_index=True) if daily_roll else pd.DataFrame()
 
-            # Plot one chart per metric
-            for k in metrics_selected_keys:
-                if k not in daily_roll.columns and f"{k}_roll" not in daily_roll.columns:
-                    continue
-                fig = px.line(
-                    daily_roll, x="Date", y=f"{k}_roll", color="PitchType",
-                    title=f"{k} — {window_days}-day Rolling Average",
-                    labels={"Date": "Date", f"{k}_roll": k, "PitchType": "Pitch Type"},
-                    color_discrete_map=color_map
+            if overlay_mode == "Overlay metrics in one chart" and len(metrics_selected_keys) >= 2:
+                fig = _overlay_date_chart(
+                    daily_roll, "Date", pt_selected, metrics_selected_keys,
+                    color_map, norm_choice, f"{window_days}-day", "Date-by-Date"
                 )
-                # points overlay
-                for pt in daily_roll["PitchType"].unique():
-                    sub = daily_roll[daily_roll["PitchType"] == pt]
-                    fig.add_scatter(
-                        x=sub["Date"], y=sub[f"{k}_roll"], mode="markers",
-                        marker=dict(size=6, color=color_map.get(pt, "black"), opacity=0.6),
-                        name=f"{pt} points", showlegend=False
-                    )
-
-                # Gray highlight if a date filter is set elsewhere
-                if date_filter_option == "Single Date" and selected_date:
-                    xdt = pd.to_datetime(selected_date)
-                    fig.add_vrect(x0=xdt, x1=xdt, fillcolor="gray", opacity=0.25, line_width=0)
-                elif date_filter_option == "Date Range" and start_date and end_date:
-                    sdt, edt = pd.to_datetime(start_date), pd.to_datetime(end_date)
-                    fig.add_vrect(x0=sdt, x1=edt, fillcolor="gray", opacity=0.2, line_width=0)
-
-                fig.update_layout(template="plotly_white", hovermode="x unified")
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                # One chart per metric (original behavior)
+                for k in metrics_selected_keys:
+                    colname = f"{k}_roll"
+                    if colname not in daily_roll.columns:
+                        continue
+                    fig = px.line(
+                        daily_roll, x="Date", y=colname, color="PitchType",
+                        title=f"{k} — {window_days}-day Rolling Average",
+                        labels={"Date": "Date", colname: k, "PitchType": "Pitch Type"},
+                        color_discrete_map=color_map
+                    )
+                    for pt in daily_roll["PitchType"].unique():
+                        sub = daily_roll[daily_roll["PitchType"] == pt]
+                        fig.add_scatter(
+                            x=sub["Date"], y=sub[colname], mode="markers",
+                            marker=dict(size=6, color=color_map.get(pt, "black"), opacity=0.6),
+                            name=f"{pt} points", showlegend=False
+                        )
+                    # Gray highlight from global date filter
+                    if date_filter_option == "Single Date" and selected_date:
+                        xdt = pd.to_datetime(selected_date)
+                        fig.add_vrect(x0=xdt, x1=xdt, fillcolor="gray", opacity=0.25, line_width=0)
+                    elif date_filter_option == "Date Range" and start_date and end_date:
+                        sdt, edt = pd.to_datetime(start_date), pd.to_datetime(end_date)
+                        fig.add_vrect(x0=sdt, x1=edt, fillcolor="gray", opacity=0.2, line_width=0)
+                    fig.update_layout(template="plotly_white", hovermode="x unified")
+                    st.plotly_chart(fig, use_container_width=True)
 
         else:
             # Pitch-by-pitch needs a single date + window size in pitches
@@ -904,29 +1073,37 @@ def render_rolling_average_charts_tab():
                 g = g.sort_values("PitchNo").copy()
                 for k in metrics_selected_keys:
                     if k in g.columns:
+                        g[k] = pd.to_numeric(g[k], errors="coerce")
                         g[f"{k}_roll"] = g[k].rolling(window=p_window, min_periods=1).mean()
                 rolled.append(g)
             rolled = pd.concat(rolled, ignore_index=True) if rolled else pd.DataFrame()
 
-            for k in metrics_selected_keys:
-                if f"{k}_roll" not in rolled.columns:
-                    continue
-
-                fig = px.line(
-                    rolled, x="PitchNo", y=f"{k}_roll", color="PitchType",
-                    title=f"{k} — {p_window}-pitch Rolling Average ({xdt.strftime('%b %d, %Y')})",
-                    labels={"PitchNo": "Pitch #", f"{k}_roll": k, "PitchType": "Pitch Type"},
-                    color_discrete_map=color_map
+            if overlay_mode == "Overlay metrics in one chart" and len(metrics_selected_keys) >= 2:
+                fig = _overlay_pitch_chart(
+                    rolled, "PitchNo", pt_selected, metrics_selected_keys,
+                    color_map, norm_choice, f"{p_window}-pitch", xdt.strftime('%b %d, %Y')
                 )
-                for pt in rolled["PitchType"].unique():
-                    sub = rolled[rolled["PitchType"] == pt]
-                    fig.add_scatter(
-                        x=sub["PitchNo"], y=sub[f"{k}_roll"], mode="markers",
-                        marker=dict(size=7, color=color_map.get(pt, "black"), opacity=0.7),
-                        name=f"{pt} points", showlegend=False
-                    )
-                fig.update_layout(template="plotly_white", hovermode="x unified")
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                for k in metrics_selected_keys:
+                    colname = f"{k}_roll"
+                    if colname not in rolled.columns:
+                        continue
+                    fig = px.line(
+                        rolled, x="PitchNo", y=colname, color="PitchType",
+                        title=f"{k} — {p_window}-pitch Rolling Average ({xdt.strftime('%b %d, %Y')})",
+                        labels={"PitchNo": "Pitch #", colname: k, "PitchType": "Pitch Type"},
+                        color_discrete_map=color_map
+                    )
+                    for pt in rolled["PitchType"].unique():
+                        sub = rolled[rolled["PitchType"] == pt]
+                        fig.add_scatter(
+                            x=sub["PitchNo"], y=sub[colname], mode="markers",
+                            marker=dict(size=7, color=color_map.get(pt, "black"), opacity=0.7),
+                            name=f"{pt} points", showlegend=False
+                        )
+                    fig.update_layout(template="plotly_white", hovermode="x unified")
+                    st.plotly_chart(fig, use_container_width=True)
 
     except Exception as e:
         st.error(f"Error in Rolling Average Charts: {e}")
