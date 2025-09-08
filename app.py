@@ -984,6 +984,7 @@ def render_rolling_average_charts_tab():
             ("RelSpeed", "Velocity"),
             ("InducedVertBreak", "iVB"),
             ("HorzBreak", "HB"),
+            ("RelHeight", "RelH"),
             ("SpinRate", "Spin"),
             ("Extension", "Extension"),
             ("StuffPlus", "StuffPlus"),
