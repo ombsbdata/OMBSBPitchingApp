@@ -14,9 +14,9 @@ import plotly.graph_objects as go
 # -----------------------------------------------------------------------------------
 # Config / constants
 # -----------------------------------------------------------------------------------
-SEASON_FILE = "Fall_2025_wRV_MASTER.csv"     # main dataset (plays)
-ROLLING_FILE = "Fall_2025_wRV_MASTER.csv"    # if you truly have a separate rolling file, point it here
-STUFFPLUS_FILE = "Fall_2025_wRV_MASTER.csv"  # Stuff+ source; can be the same file in your case
+SEASON_FILE = "Fall_2025_wRV_with_stuff.csv"     # main dataset (plays)
+ROLLING_FILE = "Fall_2025_wRV_with_stuff.csv"    # if you truly have a separate rolling file, point it here
+STUFFPLUS_FILE = "Fall_2025_wRV_with_stuff.csv"  # Stuff+ source; can be the same file in your case
 
 TEAM_FILTER = "OLE_REB"  # change to None to allow all teams
 
