@@ -113,7 +113,14 @@ def load_csv(file_path: str) -> pd.DataFrame:
 # -----------------------------------------------------------------------------------
 season_df = load_csv(SEASON_FILE)
 rolling_df = load_csv(ROLLING_FILE)
-stuff_df = load_csv(STUFFPLUS_FILE)[["Pitcher", "PitchType", "StuffPlus"]].copy() if "StuffPlus" in load_csv(STUFFPLUS_FILE).columns else pd.DataFrame(columns=["Pitcher", "PitchType", "StuffPlus"])
+# --- Build stuff_df ONCE, with canonical PitchType and numeric StuffPlus
+stuff_src = load_csv(STUFFPLUS_FILE)  # has PitchType from load_csv()
+if "StuffPlus" in stuff_src.columns:
+    stuff_src["StuffPlus"] = pd.to_numeric(stuff_src["StuffPlus"], errors="coerce")
+    # keep only the columns we need
+    stuff_df = stuff_src[["Pitcher", "PitchType", "StuffPlus"]].dropna(subset=["PitchType"])
+else:
+    stuff_df = pd.DataFrame(columns=["Pitcher", "PitchType", "StuffPlus"])
 
 if TEAM_FILTER and "PitcherTeam" in season_df.columns:
     season_df = season_df[season_df["PitcherTeam"] == TEAM_FILTER]
@@ -321,14 +328,20 @@ def generate_pitch_traits_table():
         )
 
         # --- FIX 1: StuffPlus merge on canonical keys (Pitcher + PitchType)
+        # --- Stuff+ merge: collapse to one row per PitchType for this pitcher
         sp = stuff_df.copy()
         if not sp.empty:
-            sp["StuffPlus"] = pd.to_numeric(sp["StuffPlus"], errors="coerce")
-            sp = sp[(sp["Pitcher"] == pitcher_name)]
-            grouped = grouped.merge(
-                sp[["PitchType", "StuffPlus"]],
-                on="PitchType", how="left"
-            )
+            sp = sp[sp["Pitcher"] == pitcher_name]
+        
+            # If StuffPlus exists per-pitch/per-game, collapse to a single value per PitchType.
+            # Mean is common; switch to median or last if you prefer.
+            sp = (sp
+                  .groupby("PitchType", as_index=False, observed=True)
+                  .agg(StuffPlus=("StuffPlus", "mean")))
+        
+            # Now this is 1:1 by PitchType → safe to merge
+            grouped = grouped.merge(sp, on="PitchType", how="left", validate="one_to_one")
+
 
         # sort by usage
         grouped = grouped.sort_values("Count", ascending=False)
