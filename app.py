@@ -156,6 +156,40 @@ elif date_filter_option == "Date Range":
     else:
         st.sidebar.warning("Please select a valid date range.")
 
+# --- Pitch Type filter (left sidebar)
+st.sidebar.header("Pitch Types")
+
+if "PitchType" in season_df.columns:
+    # Limit options to the currently selected pitcher so the list stays tidy
+    _pt_src = season_df
+    if "Pitcher" in _pt_src.columns:
+        _pt_src = _pt_src[_pt_src["Pitcher"] == pitcher_name]
+
+    available_types = sorted(
+        _pt_src["PitchType"].dropna().unique().tolist()
+    )
+else:
+    available_types = []
+
+# If nothing is available (edge case), keep an empty selection to avoid KeyErrors
+if not available_types:
+    selected_types = []
+    st.sidebar.caption("No pitch types available for this selection.")
+else:
+    # Multiselect drives all visuals via filter_data()
+    selected_types = st.sidebar.multiselect(
+        "Include pitch types:",
+        options=available_types,
+        default=available_types,
+        help="Filters all visuals in Pitch Flight Data by these pitch types."
+    )
+
+    # Quick actions
+    col_a, col_b = st.sidebar.columns(2)
+    if col_a.button("All", use_container_width=True):
+        selected_types = available_types
+    if col_b.button("None", use_container_width=True):
+        selected_types = []
 
 
 # --- Rolling view control (explicit, independent of the date filter above)
@@ -728,11 +762,182 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
         st.error(f"An error occurred while generating rolling line graphs: {e}")
 
 
+def render_rolling_average_charts_tab():
+    """
+    Flexible rolling charts:
+      - Select multiple metrics
+      - Choose Date-by-Date or Pitch-by-Pitch (Single Date)
+      - Pick rolling window size
+      - Filter by pitch types for the lines
+    """
+    try:
+        df = rolling_df.copy()
+        if df.empty or "Pitcher" not in df.columns:
+            st.info("No data available for rolling charts.")
+            return
+
+        df = df[df["Pitcher"] == pitcher_name].copy()
+        if df.empty:
+            st.info("No data for the selected pitcher.")
+            return
+
+        # Ensure datatypes
+        df = _ensure_date(df, "Date")
+        if "PitchType" not in df.columns:
+            df["PitchType"] = df.apply(canonical_pitch_type, axis=1)
+
+        # Candidate metrics (only keep those that exist in df)
+        metric_options_all = [
+            ("RelSpeed", "Velocity"),
+            ("InducedVertBreak", "iVB"),
+            ("HorzBreak", "HB"),
+            ("SpinRate", "Spin"),
+            ("Extension", "Extension"),
+            ("StuffPlus", "StuffPlus"),
+            ("VertApprAngle", "VAA"),
+            ("HorzApprAngle", "HAA"),
+        ]
+        present_metrics = [(k, lbl) for k, lbl in metric_options_all if k in df.columns]
+
+        for k, _ in present_metrics:
+            df[k] = pd.to_numeric(df[k], errors="coerce")
+
+        st.subheader("Configure Rolling Average Charts")
+
+        # Controls
+        metrics_selected = st.multiselect(
+            "Metrics",
+            options=[f"{lbl} ({k})" for k, lbl in present_metrics],
+            default=[f"{lbl} ({k})" for k, lbl in present_metrics[:3]]  # first three by default
+        )
+        # Map back to column keys
+        metrics_selected_keys = [m.split("(")[-1].strip(")") for m in metrics_selected]
+
+        view_mode = st.radio(
+            "View Mode",
+            ["Date-by-Date Rolling Averages", "Pitch-by-Pitch (Single Date)"],
+            index=0,
+            horizontal=False
+        )
+
+        # Pitch type filter inside the tab (independent of left sidebar)
+        pt_available = sorted(df["PitchType"].dropna().unique().tolist())
+        pt_selected = st.multiselect("Pitch Types to include", options=pt_available, default=pt_available)
+
+        color_map = {pt: PLOTLY_COLORS.get(pt, "black") for pt in pt_available}
+
+        if view_mode == "Date-by-Date Rolling Averages":
+            window_days = st.slider("Rolling window (in days/rows)", min_value=1, max_value=30, value=7, step=1,
+                                    help="Rolling window size over daily rows per pitch type.")
+
+            # Daily mean by date & pitch type
+            daily = (df.groupby(["Date", "PitchType"])
+                       .agg({k: "mean" for k in metrics_selected_keys})
+                       .reset_index()
+                       .sort_values(["PitchType", "Date"]))
+
+            # Keep chosen pitch types
+            daily = daily[daily["PitchType"].isin(pt_selected)]
+
+            # Apply rolling per pitch type
+            daily_roll = []
+            for pt, g in daily.groupby("PitchType", as_index=False):
+                g = g.sort_values("Date").copy()
+                for k in metrics_selected_keys:
+                    if k in g.columns:
+                        g[f"{k}_roll"] = g[k].rolling(window=window_days, min_periods=1).mean()
+                daily_roll.append(g)
+            daily_roll = pd.concat(daily_roll, ignore_index=True) if daily_roll else pd.DataFrame()
+
+            # Plot one chart per metric
+            for k in metrics_selected_keys:
+                if k not in daily_roll.columns and f"{k}_roll" not in daily_roll.columns:
+                    continue
+                fig = px.line(
+                    daily_roll, x="Date", y=f"{k}_roll", color="PitchType",
+                    title=f"{k} — {window_days}-day Rolling Average",
+                    labels={"Date": "Date", f"{k}_roll": k, "PitchType": "Pitch Type"},
+                    color_discrete_map=color_map
+                )
+                # points overlay
+                for pt in daily_roll["PitchType"].unique():
+                    sub = daily_roll[daily_roll["PitchType"] == pt]
+                    fig.add_scatter(
+                        x=sub["Date"], y=sub[f"{k}_roll"], mode="markers",
+                        marker=dict(size=6, color=color_map.get(pt, "black"), opacity=0.6),
+                        name=f"{pt} points", showlegend=False
+                    )
+
+                # Gray highlight if a date filter is set elsewhere
+                if date_filter_option == "Single Date" and selected_date:
+                    xdt = pd.to_datetime(selected_date)
+                    fig.add_vrect(x0=xdt, x1=xdt, fillcolor="gray", opacity=0.25, line_width=0)
+                elif date_filter_option == "Date Range" and start_date and end_date:
+                    sdt, edt = pd.to_datetime(start_date), pd.to_datetime(end_date)
+                    fig.add_vrect(x0=sdt, x1=edt, fillcolor="gray", opacity=0.2, line_width=0)
+
+                fig.update_layout(template="plotly_white", hovermode="x unified")
+                st.plotly_chart(fig, use_container_width=True)
+
+        else:
+            # Pitch-by-pitch needs a single date + window size in pitches
+            p_window = st.slider("Rolling window (in pitches)", min_value=1, max_value=50, value=5, step=1)
+            p_date = st.date_input("Select a date for Pitch-by-Pitch view", value=datetime.today())
+            xdt = pd.to_datetime(p_date)
+
+            day = df[df["Date"].dt.date == xdt.date()].copy()
+            if day.empty:
+                st.info(f"No data for {xdt.strftime('%B %d, %Y')}.")
+                return
+
+            if "PitchNo" not in day.columns:
+                st.info("This view requires a PitchNo column.")
+                return
+
+            day["PitchNo"] = pd.to_numeric(day["PitchNo"], errors="coerce")
+            day = day.dropna(subset=["PitchNo"]).sort_values(["PitchType", "PitchNo"])
+            day = day[day["PitchType"].isin(pt_selected)]
+
+            # Rolling per PitchType over sequential pitches
+            rolled = []
+            for pt, g in day.groupby("PitchType", as_index=False):
+                g = g.sort_values("PitchNo").copy()
+                for k in metrics_selected_keys:
+                    if k in g.columns:
+                        g[f"{k}_roll"] = g[k].rolling(window=p_window, min_periods=1).mean()
+                rolled.append(g)
+            rolled = pd.concat(rolled, ignore_index=True) if rolled else pd.DataFrame()
+
+            for k in metrics_selected_keys:
+                if f"{k}_roll" not in rolled.columns:
+                    continue
+
+                fig = px.line(
+                    rolled, x="PitchNo", y=f"{k}_roll", color="PitchType",
+                    title=f"{k} — {p_window}-pitch Rolling Average ({xdt.strftime('%b %d, %Y')})",
+                    labels={"PitchNo": "Pitch #", f"{k}_roll": k, "PitchType": "Pitch Type"},
+                    color_discrete_map=color_map
+                )
+                for pt in rolled["PitchType"].unique():
+                    sub = rolled[rolled["PitchType"] == pt]
+                    fig.add_scatter(
+                        x=sub["PitchNo"], y=sub[f"{k}_roll"], mode="markers",
+                        marker=dict(size=7, color=color_map.get(pt, "black"), opacity=0.7),
+                        name=f"{pt} points", showlegend=False
+                    )
+                fig.update_layout(template="plotly_white", hovermode="x unified")
+                st.plotly_chart(fig, use_container_width=True)
+
+    except Exception as e:
+        st.error(f"Error in Rolling Average Charts: {e}")
+
+
+
 
 
 
 # === RENDER ===
-tab_flight, tab_biomech = st.tabs(["Pitch Flight Data", "Bio Mech Data"])
+tab_flight, tab_biomech, tab_roll = st.tabs(["Pitch Flight Data", "Bio Mech Data", "Rolling Average Charts"])
 
 with tab_flight:
     plot_heatmaps(heatmap_type)
@@ -740,11 +945,14 @@ with tab_flight:
     generate_pitch_traits_table()
     generate_batted_ball_table()
     plot_pitch_movement()
-    # use the explicit rolling mode + optional pitch-by-pitch date
     generate_rolling_line_graphs(rolling_view_mode, pitch_by_pitch_date=pp_selected_date)
     plot_release_and_approach_angles()
 
 with tab_biomech:
     st.subheader("Bio Mech Data")
     st.info("Coming soon: add biomechanics metrics, force plate summaries, motion-capture angles, and more.")
+
+with tab_roll:
+    render_rolling_average_charts_tab()
+
 
