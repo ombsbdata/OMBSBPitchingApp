@@ -579,37 +579,88 @@ def plot_pitch_movement():
             st.info("Pitch Movement needs iVB, HB, RelSpeed.")
             return
 
-        data = df.dropna(subset=["InducedVertBreak", "HorzBreak"])
+        # Keep only rows that have movement coordinates
+        data = df.dropna(subset=["InducedVertBreak", "HorzBreak"]).copy()
         if data.empty:
             st.info("No pitch movement data available for plotting.")
             return
 
+        # Ensure numeric + rounding for display
+        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "StuffPlus"]:
+            if c in data.columns:
+                data[c] = pd.to_numeric(data[c], errors="coerce")
+
+        # Build per-point hover fields (strings so we can show '—' when missing)
+        def fmt1(x):
+            return "—" if pd.isna(x) else f"{x:.1f}"
+
+        # Date formatting for hover
+        if "Date" in data.columns:
+            data["Date_str"] = data["Date"].dt.strftime("%Y-%m-%d")
+            data["Date_str"] = data["Date_str"].fillna("—")
+        else:
+            data["Date_str"] = "—"
+
+        # Formatted fields
+        data["RelSpeed_disp"] = data["RelSpeed"].apply(fmt1) if "RelSpeed" in data.columns else "—"
+        data["iVB_disp"]      = data["InducedVertBreak"].apply(fmt1)
+        data["HB_disp"]       = data["HorzBreak"].apply(fmt1)
+        data["Spin_disp"]     = data["SpinRate"].apply(fmt1) if "SpinRate" in data.columns else "—"
+        data["SP_disp"]       = data["StuffPlus"].apply(lambda v: "—" if pd.isna(v) else f"{v:.1f}") if "StuffPlus" in data.columns else "—"
+
+        # Plotly
         fig = go.Figure()
-        for pt in data["PitchType"].unique():
+        for pt in data["PitchType"].dropna().unique():
             sub = data[data["PitchType"] == pt].copy()
-            sub["RelSpeed"] = sub["RelSpeed"].round(1)
-            sub["InducedVertBreak"] = sub["InducedVertBreak"].round(1)
-            sub["HorzBreak"] = sub["HorzBreak"].round(1)
+
+            # Customdata order must match hovertemplate placeholders
+            sub_customdata = np.stack([
+                sub["Date_str"].values,
+                sub["RelSpeed_disp"].values,
+                sub["iVB_disp"].values,
+                sub["HB_disp"].values,
+                sub["Spin_disp"].values,
+                sub["SP_disp"].values,   # StuffPlus (rounded .1)
+            ], axis=-1)
+
             fig.add_trace(go.Scatter(
                 x=sub["HorzBreak"], y=sub["InducedVertBreak"],
                 mode="markers", name=pt,
-                marker=dict(size=9, color=PLOTLY_COLORS.get(pt, "black"), opacity=0.85, line=dict(width=1, color="white")),
-                text=sub.apply(lambda r: f"Date: {r['Date']}<br>Velo: {r['RelSpeed']}<br>iVB: {r['InducedVertBreak']}<br>HB: {r['HorzBreak']}<br>Spin: {r.get('SpinRate','')}", axis=1),
-                hoverinfo="text"
+                marker=dict(
+                    size=9,
+                    color=PLOTLY_COLORS.get(pt, "black"),
+                    opacity=0.85,
+                    line=dict(width=1, color="white")
+                ),
+                customdata=sub_customdata,
+                hovertemplate=(
+                    "<b>%{fullData.name}</b><br>"
+                    "Date: %{customdata[0]}<br>"
+                    "Velo: %{customdata[1]} mph<br>"
+                    "iVB: %{customdata[2]} in<br>"
+                    "HB: %{customdata[3]} in<br>"
+                    "Spin: %{customdata[4]} rpm<br>"
+                    "Stuff+: <b>%{customdata[5]}</b><extra></extra>"
+                )
             ))
+
+        # Crosshairs
         fig.add_shape(type="line", x0=0, x1=0, y0=-25, y1=25, line=dict(color="black", width=2), layer="below")
         fig.add_shape(type="line", x0=-25, x1=25, y0=0, y1=0, line=dict(color="black", width=2), layer="below")
-        fig.update_xaxes(zeroline=True, zerolinewidth=2, zerolinecolor="black")
-        fig.update_yaxes(zeroline=True, zerolinewidth=2, zerolinecolor="black")
+
+        fig.update_xaxes(title="Horizontal Break (inches)", range=[-30, 30], zeroline=True, zerolinewidth=2, zerolinecolor="black")
+        fig.update_yaxes(title="Induced Vertical Break (inches)", range=[-30, 30], zeroline=True, zerolinewidth=2, zerolinecolor="black")
         fig.update_layout(
             title=f"Pitch Movement for {pitcher_name}",
-            xaxis=dict(title="Horizontal Break (inches)", range=[-30, 30]),
-            yaxis=dict(title="Induced Vertical Break (inches)", range=[-30, 30]),
-            template="plotly_white", legend_title="Pitch Type", width=900, height=700
+            template="plotly_white",
+            legend_title="Pitch Type",
+            width=900, height=700,
+            hovermode="closest"
         )
         st.plotly_chart(fig, use_container_width=True)
     except Exception as e:
         st.error(f"An error occurred while generating the pitch movement graph: {e}")
+
 
 def plot_release_and_approach_angles():
     try:
