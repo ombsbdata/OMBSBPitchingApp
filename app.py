@@ -161,6 +161,27 @@ available_types = sorted(season_df.loc[season_df["Pitcher"] == pitcher_name, "Pi
                   if "PitchType" in season_df.columns else []
 selected_types = st.sidebar.multiselect("Pitch Types:", options=available_types, default=available_types)
 
+# --- Rolling view control (explicit, independent of the date filter above)
+st.sidebar.header("Rolling View")
+rolling_view_mode = st.sidebar.radio(
+    "How should rolling charts be plotted?",
+    ["Date-by-Date Rolling Averages", "Pitch-by-Pitch (Single Date)"],
+    index=0,
+    help="Date-by-Date shows daily averages over time. Pitch-by-Pitch shows sequential pitches for a single date."
+)
+
+# If user wants pitch-by-pitch but hasn't set Single Date above, give them a dedicated date picker here
+pp_selected_date = None
+if rolling_view_mode == "Pitch-by-Pitch (Single Date)":
+    if date_filter_option == "Single Date" and selected_date:
+        pp_selected_date = selected_date
+    else:
+        pp_selected_date = st.sidebar.date_input(
+            "Select a date for Pitch-by-Pitch view",
+            value=datetime.today()
+        )
+
+
 # -----------------------------------------------------------------------------------
 # Filters
 # -----------------------------------------------------------------------------------
@@ -601,7 +622,7 @@ def plot_release_and_approach_angles():
     except Exception as e:
         st.error(f"An error occurred while generating the angle plots: {e}")
 
-def generate_rolling_line_graphs():
+def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
     try:
         df = rolling_df.copy()
         if df.empty or "Pitcher" not in df.columns:
@@ -621,11 +642,6 @@ def generate_rolling_line_graphs():
         if "PitchType" not in df.columns:
             df["PitchType"] = df.apply(canonical_pitch_type, axis=1)
 
-        view_option = "Full Dataset Rolling Averages"
-        if date_filter_option == "Single Date":
-            view_option = st.sidebar.radio("Select Rolling View:",
-                                           ["Full Dataset Rolling Averages", "Pitch-by-Pitch (Single Date)"], index=0)
-
         color_map = {pt: PLOTLY_COLORS.get(pt, "black") for pt in df["PitchType"].unique()}
 
         metrics = [
@@ -638,19 +654,20 @@ def generate_rolling_line_graphs():
         if "StuffPlus" in df.columns:
             metrics.append(("StuffPlus", "StuffPlus"))
 
-        if view_option == "Full Dataset Rolling Averages":
+        if view_mode == "Date-by-Date Rolling Averages":
+            # daily means by pitch type
             roll = (df.groupby(["Date", "PitchType"])
                       .agg({m[0]: "mean" for m in metrics if m[0] in df.columns})
                       .reset_index()
                       .sort_values("Date"))
 
-            st.subheader("Rolling Averages Across Full Database")
+            st.subheader("Rolling Averages Across Full Database (Date-by-Date)")
             for metric, label in metrics:
                 if metric not in roll.columns:
                     continue
                 fig = px.line(
                     roll, x="Date", y=metric, color="PitchType",
-                    title=f"{label} Rolling Averages by Pitch Type (Full Dataset)",
+                    title=f"{label} Rolling Averages by Pitch Type (Date-by-Date)",
                     labels={"Date": "Date", metric: label, "PitchType": "Pitch Type"},
                     color_discrete_map=color_map, hover_data={"Date": "|%b %d, %Y", metric: ":.2f"},
                 )
@@ -663,7 +680,7 @@ def generate_rolling_line_graphs():
                         name=f"{pt} points", showlegend=False
                     )
 
-                # highlight date(s)
+                # highlight active filter window, if any
                 if date_filter_option == "Single Date" and selected_date:
                     xdt = pd.to_datetime(selected_date)
                     fig.add_vrect(x0=xdt, x1=xdt, fillcolor="gray", opacity=0.25, line_width=0)
@@ -676,10 +693,14 @@ def generate_rolling_line_graphs():
                 st.plotly_chart(fig, use_container_width=True)
 
         else:  # Pitch-by-Pitch (Single Date)
-            xdt = pd.to_datetime(selected_date)
+            if pitch_by_pitch_date is None:
+                st.info("Choose a date for Pitch-by-Pitch view in the sidebar.")
+                return
+
+            xdt = pd.to_datetime(pitch_by_pitch_date)
             day = df[df["Date"].dt.date == xdt.date()].copy()
             if day.empty:
-                st.info("No data available for the selected date.")
+                st.info(f"No data available for {xdt.strftime('%B %d, %Y')}.")
                 return
 
             if "PitchNo" in day.columns:
@@ -713,13 +734,20 @@ def generate_rolling_line_graphs():
 
 
 
-
-
 # === RENDER ===
-plot_heatmaps(heatmap_type)
-generate_plate_discipline_table()
-generate_pitch_traits_table()
-generate_batted_ball_table()
-plot_pitch_movement()
-generate_rolling_line_graphs()
-plot_release_and_approach_angles()
+tab_flight, tab_biomech = st.tabs(["Pitch Flight Data", "Bio Mech Data"])
+
+with tab_flight:
+    plot_heatmaps(heatmap_type)
+    generate_plate_discipline_table()
+    generate_pitch_traits_table()
+    generate_batted_ball_table()
+    plot_pitch_movement()
+    # use the explicit rolling mode + optional pitch-by-pitch date
+    generate_rolling_line_graphs(rolling_view_mode, pitch_by_pitch_date=pp_selected_date)
+    plot_release_and_approach_angles()
+
+with tab_biomech:
+    st.subheader("Bio Mech Data")
+    st.info("Coming soon: add biomechanics metrics, force plate summaries, motion-capture angles, and more.")
+
