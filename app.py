@@ -156,10 +156,7 @@ elif date_filter_option == "Date Range":
     else:
         st.sidebar.warning("Please select a valid date range.")
 
-# Optional: let users sub-filter pitch types
-available_types = sorted(season_df.loc[season_df["Pitcher"] == pitcher_name, "PitchType"].dropna().unique().tolist()) \
-                  if "PitchType" in season_df.columns else []
-selected_types = st.sidebar.multiselect("Pitch Types:", options=available_types, default=available_types)
+
 
 # --- Rolling view control (explicit, independent of the date filter above)
 st.sidebar.header("Rolling View")
