@@ -586,7 +586,7 @@ def plot_pitch_movement():
             return
 
         # Ensure numeric + rounding for display
-        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "Extension", "RelHeight", "RelSide", StuffPlus"]:
+        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "Extension", "RelHeight", "RelSide", "StuffPlus"]:
             if c in data.columns:
                 data[c] = pd.to_numeric(data[c], errors="coerce")
 
