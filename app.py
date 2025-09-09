@@ -625,6 +625,7 @@ def plot_pitch_movement():
                 sub["Spin_disp"].values,
                 sub["Ext_disp"].values,
                 sub["RelH_disp"].values,
+                sub["RelS_disp"].values,
                 sub["SP_disp"].values,   # StuffPlus (rounded .1)
             ], axis=-1)
 
@@ -645,7 +646,10 @@ def plot_pitch_movement():
                     "iVB: %{customdata[2]} in<br>"
                     "HB: %{customdata[3]} in<br>"
                     "Spin: %{customdata[4]} rpm<br>"
-                    "Stuff+: <b>%{customdata[5]}</b><extra></extra>"
+                    "Extension: %{customdata[5]} ft<br>"
+                    "RelH: %{customdata[6]} ft<br>"
+                    "RelS: %{customdata[7]} ft<br>"
+                    "Stuff+: <b>%{customdata[8]}</b><extra></extra>"
                 )
             ))
 
