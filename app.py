@@ -606,6 +606,8 @@ def plot_pitch_movement():
         data["iVB_disp"]      = data["InducedVertBreak"].apply(fmt1)
         data["HB_disp"]       = data["HorzBreak"].apply(fmt1)
         data["Spin_disp"]     = data["SpinRate"].apply(fmt1) if "SpinRate" in data.columns else "—"
+        data["Ext_disp"]     = data["Extension"].apply(fmt1) if "Extension" in data.columns else "—"
+        data["RelH_disp"]    = data["RelHeight"].apply(fmt1) if "RelHeigh" in data.columns else "-"
         data["SP_disp"]       = data["StuffPlus"].apply(lambda v: "—" if pd.isna(v) else f"{v:.1f}") if "StuffPlus" in data.columns else "—"
 
         # Plotly
@@ -620,6 +622,8 @@ def plot_pitch_movement():
                 sub["iVB_disp"].values,
                 sub["HB_disp"].values,
                 sub["Spin_disp"].values,
+                sub["Ext_disp"].values,
+                sub["RelH_disp"].values,
                 sub["SP_disp"].values,   # StuffPlus (rounded .1)
             ], axis=-1)
 
