@@ -586,7 +586,7 @@ def plot_pitch_movement():
             return
 
         # Ensure numeric + rounding for display
-        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "StuffPlus"]:
+        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "Extension", "RelHeight", "RelSide", StuffPlus"]:
             if c in data.columns:
                 data[c] = pd.to_numeric(data[c], errors="coerce")
 
@@ -607,7 +607,8 @@ def plot_pitch_movement():
         data["HB_disp"]       = data["HorzBreak"].apply(fmt1)
         data["Spin_disp"]     = data["SpinRate"].apply(fmt1) if "SpinRate" in data.columns else "—"
         data["Ext_disp"]     = data["Extension"].apply(fmt1) if "Extension" in data.columns else "—"
-        data["RelH_disp"]    = data["RelHeight"].apply(fmt1) if "RelHeigh" in data.columns else "-"
+        data["RelH_disp"]    = data["RelHeight"].apply(fmt1) if "RelHeight" in data.columns else "-"
+        data["RelS_disp"]    = data["RelSide"].apply(fmt1) if "RelSide" in data.columns else "-"
         data["SP_disp"]       = data["StuffPlus"].apply(lambda v: "—" if pd.isna(v) else f"{v:.1f}") if "StuffPlus" in data.columns else "—"
 
         # Plotly
