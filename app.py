@@ -586,7 +586,7 @@ def plot_pitch_movement():
             return
 
         # Ensure numeric + rounding for display
-        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "Extension", "RelHeight", "RelSide", "StuffPlus"]:
+        for c in ["PitchNo","RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "Extension", "RelHeight", "RelSide", "StuffPlus"]:
             if c in data.columns:
                 data[c] = pd.to_numeric(data[c], errors="coerce")
 
@@ -602,6 +602,7 @@ def plot_pitch_movement():
             data["Date_str"] = "—"
 
         # Formatted fields
+        data["PitchNo_disp"] = data["PitchNo"].apply(fmt1) if "PitchNo" in data.columns else "—"
         data["RelSpeed_disp"] = data["RelSpeed"].apply(fmt1) if "RelSpeed" in data.columns else "—"
         data["iVB_disp"]      = data["InducedVertBreak"].apply(fmt1)
         data["HB_disp"]       = data["HorzBreak"].apply(fmt1)
@@ -619,6 +620,7 @@ def plot_pitch_movement():
             # Customdata order must match hovertemplate placeholders
             sub_customdata = np.stack([
                 sub["Date_str"].values,
+                sub["PitchNo_disp"].values,
                 sub["RelSpeed_disp"].values,
                 sub["iVB_disp"].values,
                 sub["HB_disp"].values,
@@ -642,14 +644,15 @@ def plot_pitch_movement():
                 hovertemplate=(
                     "<b>%{fullData.name}</b><br>"
                     "Date: %{customdata[0]}<br>"
-                    "Velo: %{customdata[1]} mph<br>"
-                    "iVB: %{customdata[2]} in<br>"
-                    "HB: %{customdata[3]} in<br>"
-                    "Spin: %{customdata[4]} rpm<br>"
-                    "Extension: %{customdata[5]} ft<br>"
-                    "RelH: %{customdata[6]} ft<br>"
-                    "RelS: %{customdata[7]} ft<br>"
-                    "Stuff+: <b>%{customdata[8]}</b><extra></extra>"
+                    "Pitch#: %{customdata[1]}<br>"
+                    "Velo: %{customdata[2]} mph<br>"
+                    "iVB: %{customdata[3]} in<br>"
+                    "HB: %{customdata[4]} in<br>"
+                    "Spin: %{customdata[5]} rpm<br>"
+                    "Extension: %{customdata[6]} ft<br>"
+                    "RelH: %{customdata[7]} ft<br>"
+                    "RelS: %{customdata[8]} ft<br>"
+                    "Stuff+: <b>%{customdata[9]}</b><extra></extra>"
                 )
             ))
 
