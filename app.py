@@ -110,15 +110,25 @@ def load_biomech_data() -> pd.DataFrame:
     local_path = os.path.join("biomech_clean", "biomech_all.csv")
     if os.path.exists(local_path):
         df = pd.read_csv(local_path)
+        # Clean base columns
+        if "Player" in df.columns:
+            df["Player"] = df["Player"].astype(str).str.strip()
         if "DATE" in df.columns:
             df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
-        # numeric coercion for metrics
+        # Ensure PlayerKey exists and is normalized
+        if "PlayerKey" not in df.columns:
+            df["PlayerKey"] = df["Player"].apply(canon_key_last_first)
+        else:
+            df["PlayerKey"] = df["PlayerKey"].fillna(df["Player"].apply(canon_key_last_first))
+            df["PlayerKey"] = df["PlayerKey"].astype(str).str.strip()
+        # Numeric coercion
         for c in df.columns:
             if c not in ("Player","PlayerKey","DATE","PREP_TIME"):
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         return df.sort_values(["Player","DATE"], na_position="last")
-    # fallback: live workbook (your existing function)
+    # fallback: live workbook (uses canon_key_last_first inside)
     return load_biomech_workbook()
+
 
 
 def _biomech_summary(one: pd.DataFrame) -> pd.DataFrame:
@@ -169,6 +179,33 @@ def _biomech_summary(one: pd.DataFrame) -> pd.DataFrame:
         if c != "Events":
             out[c] = out[c].round(2)
     return out
+
+def canon_key_last_first(name: str) -> str:
+    """
+    Normalize 'Last, First' or 'First Last' to 'lastfirst' (letters only, lowercase).
+    Also tolerates 'Last,First' (no space) and extra whitespace.
+    """
+    if not name:
+        return ""
+    s = str(name).strip()
+    s = re.sub(r"\s+", " ", s)
+
+    if "," in s:
+        last, first = [p.strip() for p in s.split(",", 1)]
+    else:
+        parts = s.split(" ")
+        if len(parts) >= 2:
+            first = " ".join(parts[1:])
+            last  = parts[0]
+        else:
+            first, last = s, ""
+
+    last  = re.sub(r"[^A-Za-z]", "", last)
+    first = re.sub(r"[^A-Za-z]", "", first)
+    return (last + first).lower()
+
+
+
 # End of bio mech util
 
 # -----------------------------------------------------------------------------------
@@ -1369,20 +1406,28 @@ with tab_biomech:
     else:
         # Link sidebar pitcher to biomech by canonical key
         sb_key = canon_key_last_first(pitcher_name)
-
-        # If not found, offer a selector over biomech players
-        if sb_key and (bio_df["PlayerKey"] == sb_key).any():
-            player_choice = bio_df.loc[bio_df["PlayerKey"] == sb_key, "Player"].iloc[0]
+        
+        # Primary: exact PlayerKey match
+        match_mask = (bio_df.get("PlayerKey", pd.Series("", index=bio_df.index)) == sb_key)
+        
+        # Secondary: ignore all punctuation/spaces just in case
+        if not match_mask.any():
+            _tmp_key2 = bio_df["Player"].astype(str).str.replace(r"[^A-Za-z]", "", regex=True).str.lower()
+            sb_key2 = re.sub(r"[^A-Za-z]", "", str(pitcher_name)).lower()
+            match_mask = (_tmp_key2 == sb_key2)
+        
+        if match_mask.any():
+            player_choice = bio_df.loc[match_mask, "Player"].iloc[0]
             st.caption(f"Linked to Bio-Mech data for: **{player_choice}**")
         else:
             players_bio = sorted(bio_df["Player"].dropna().unique().tolist())
             # best-effort preselect
-            pref_index = 0
             try:
-                pref_index = players_bio.index(next(p for p in players_bio if canon_key_last_first(p) == sb_key))
+                pref_index = next(i for i, p in enumerate(players_bio) if canon_key_last_first(p) == sb_key)
             except StopIteration:
-                pass
+                pref_index = 0
             player_choice = st.selectbox("Choose Bio-Mech Player:", players_bio, index=pref_index)
+
 
         one_all = bio_df[bio_df["Player"] == player_choice].copy()
 
