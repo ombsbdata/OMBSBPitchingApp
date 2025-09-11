@@ -10,6 +10,9 @@ import matplotlib.patches as patches
 import seaborn as sns
 import plotly.express as px
 import plotly.graph_objects as go
+import os, re, tempfile
+import gdown
+
 
 # -----------------------------------------------------------------------------------
 # Config / constants
@@ -64,6 +67,12 @@ NUMERIC_COLS = [
     "ExitSpeed", "PlateLocSide", "PlateLocHeight", "PitchNo",
     "HorzRelAngle", "VertRelAngle", "HorzApprAngle"
 ]
+
+# --- Bio-Mech Google Sheet (download as XLSX via gdown) ---
+BIOMECH_FILE_ID = "1dR8K0QPugSz34IpfndbFiSyp8OpYCOrbX0xHntwTtO8"
+BIOMECH_EXPORT_XLSX_URL = f"https://docs.google.com/spreadsheets/d/{BIOMECH_FILE_ID}/export?format=xlsx"
+
+
 
 # -----------------------------------------------------------------------------------
 # Utils
@@ -124,6 +133,106 @@ else:
 
 if TEAM_FILTER and "PitcherTeam" in season_df.columns:
     season_df = season_df[season_df["PitcherTeam"] == TEAM_FILTER]
+
+
+@st.cache_data(show_spinner=False)
+def load_biomech_workbook() -> pd.DataFrame:
+    """
+    Downloads the workbook as XLSX, parses every tab with the 2-row header
+    (band row: Fresh/Post; leaf row: RSI/PP/ECC PP/JH), and returns a tidy table.
+    Output columns include: Player, DATE, PREP_TIME, TOP_VELO, lbs,
+    Fresh_RSI, Fresh_PP, Fresh_ECC_PP, Fresh_JH, Post_RSI, Post_PP, Post_ECC_PP, Post_JH
+    """
+    # 1) download once to a temp path
+    td = tempfile.mkdtemp()
+    xlsx_path = os.path.join(td, "bio_mech.xlsx")
+    gdown.download(url=BIOMECH_EXPORT_XLSX_URL, output=xlsx_path, quiet=True)
+
+    # 2) read all sheets, raw (no header)
+    sheets = pd.read_excel(xlsx_path, sheet_name=None, header=None, engine="openpyxl")
+    rows = []
+
+    for sheet_name, raw in sheets.items():
+        if raw is None or raw.empty or raw.shape[0] < 3:
+            continue
+
+        # row 0: player title (use as Player)
+        title = str(raw.iat[0, 0]).strip() if pd.notna(raw.iat[0, 0]) else ""
+        player = title if title and title.upper() != "NAN" else sheet_name
+
+        # row 1: band headers (Fresh/Post cells; blanks over shared cols)
+        band_row = raw.iloc[1].fillna(method="ffill")
+        # row 2: leaf headers (TOP VELO, lbs, DATE, PREP TIME, RSI, PP, ECC PP, JH, ...)
+        leaf_row = raw.iloc[2].fillna("")
+
+        def norm_band(x: str) -> str:
+            x = str(x).strip().upper()
+            if x in ("FRESH", "POST"):
+                return x.title()
+            return ""  # shared cols like TOP VELO/lbs/DATE/PREP TIME
+
+        bands = [norm_band(x) for x in band_row]
+        leaves = [str(x).strip() for x in leaf_row]
+
+        # flattened columns
+        cols = []
+        for b, l in zip(bands, leaves):
+            l2 = re.sub(r"\s+", "_", l).replace("%", "Pct")
+            cols.append(l2 if not b else f"{b}_{l2}")
+
+        df = raw.iloc[3:].copy()
+        df.columns = cols
+        df = df.dropna(how="all")
+        if df.empty:
+            continue
+
+        # keep expected columns if present
+        base_cols = ["TOP_VELO", "lbs", "DATE", "PREP_TIME"]
+        metric_cols = ["Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH",
+                       "Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]
+        keep = [c for c in df.columns if c in base_cols + metric_cols]
+        if not keep:
+            continue
+        df = df[keep]
+
+        # add Player + coerce types
+        df.insert(0, "Player", player)
+        if "DATE" in df.columns:
+            df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+        if "PREP_TIME" in df.columns:
+            df["PREP_TIME"] = df["PREP_TIME"].astype(str).str.strip()
+        num_cols = [c for c in df.columns if c not in ("Player","DATE","PREP_TIME")]
+        for c in num_cols:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+        rows.append(df)
+
+    if not rows:
+        return pd.DataFrame()
+
+    out = pd.concat(rows, ignore_index=True)
+    if "DATE" in out.columns:
+        out = out.sort_values(["Player","DATE"], na_position="last")
+    return out
+
+
+def _best_biomech_player_match(df_all: pd.DataFrame, target_name: str) -> str:
+    """
+    Heuristic match: choose the biomech Player whose tokens best match the app's pitcher_name.
+    Works for 'LAST, FIRST' vs 'First Last' vs 'LAST,FIRST'.
+    """
+    if df_all.empty or "Player" not in df_all.columns or not target_name:
+        return ""
+    tgt = re.sub(r"[^A-Za-z ]", " ", target_name).upper().split()
+    best, best_score = "", -1
+    for p in df_all["Player"].dropna().unique():
+        tokens = re.sub(r"[^A-Za-z ]", " ", str(p)).upper().split()
+        # score = size of token intersection
+        score = len(set(tokens) & set(tgt))
+        if score > best_score:
+            best, best_score = p, score
+    return best
+
 
 # -----------------------------------------------------------------------------------
 # Streamlit UI
@@ -1191,7 +1300,64 @@ with tab_flight:
 
 with tab_biomech:
     st.subheader("Bio Mech Data")
-    st.info("Coming soon: add biomechanics metrics, force plate summaries, motion-capture angles, and more.")
+
+    bio_df = load_biomech_workbook()
+    if bio_df.empty:
+        st.info("No Bio-Mech workbook data found.")
+    else:
+        # Try to auto-select the matching player from biomech tabs using the sidebar pitcher_name
+        suggested_player = _best_biomech_player_match(bio_df, pitcher_name)
+        players_bio = sorted(bio_df["Player"].dropna().unique().tolist())
+        player_choice = st.selectbox("Choose Bio-Mech Player (from Google Sheet tabs):",
+                                     players_bio,
+                                     index=max(players_bio.index(suggested_player) if suggested_player in players_bio else 0, 0))
+
+        one = bio_df[bio_df["Player"] == player_choice].copy()
+        # show Fresh vs Post side-by-side
+        c1, c2 = st.columns(2)
+
+        # Pretty helpers
+        def _fmt(df):
+            out = df.copy()
+            for c in out.columns:
+                if pd.api.types.is_float_dtype(out[c]) or pd.api.types.is_integer_dtype(out[c]):
+                    out[c] = out[c].round(1)
+            return out
+
+        base_cols = [c for c in ["DATE","PREP_TIME","TOP_VELO","lbs"] if c in one.columns]
+
+        with c1:
+            st.markdown("**Fresh**")
+            fresh_cols = [c for c in one.columns if c.startswith("Fresh_")]
+            fresh = one[base_cols + fresh_cols] if fresh_cols else pd.DataFrame()
+            if fresh.empty:
+                st.write("—")
+            else:
+                st.dataframe(_fmt(fresh), use_container_width=True)
+
+        with c2:
+            st.markdown("**Post**")
+            post_cols = [c for c in one.columns if c.startswith("Post_")]
+            post = one[base_cols + post_cols] if post_cols else pd.DataFrame()
+            if post.empty:
+                st.write("—")
+            else:
+                st.dataframe(_fmt(post), use_container_width=True)
+
+        # Optional: quick deltas (Post – Fresh) when dates align
+        if {"DATE", "Fresh_RSI", "Post_RSI"}.issubset(one.columns):
+            st.markdown("**Deltas (Post − Fresh)**")
+            # merge Fresh and Post on DATE to compute deltas for the same session date
+            f = one[["DATE","Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"]].dropna(how="all", subset=["Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"])
+            p = one[["DATE","Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]].dropna(how="all", subset=["Post_RSI","Post_PP","Post_ECC_PP","Post_JH"])
+            joined = f.merge(p, on="DATE", how="inner")
+            for m in ["RSI","PP","ECC_PP","JH"]:
+                if f"Fresh_{m}" in joined.columns and f"Post_{m}" in joined.columns:
+                    joined[f"Δ_{m}"] = joined[f"Post_{m}"] - joined[f"Fresh_{m}"]
+            show = joined[["DATE"] + [c for c in joined.columns if c.startswith("Δ_")]]
+            if not show.empty:
+                st.dataframe(_fmt(show), use_container_width=True)
+
 
 with tab_roll:
     render_rolling_average_charts_tab()
