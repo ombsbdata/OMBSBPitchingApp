@@ -102,31 +102,74 @@ def canonical_pitch_type(row) -> str:
         raw = str(row.get("AutoPitchType") or "").strip()
     return PITCH_NORMALIZE_MAP.get(raw, raw if raw else "Unknown")
 
-def canon_key_last_first(name: str) -> str:
-    """
-    Given 'Last, First' or 'Last,First' (any case/spacing), return 'lastfirst' lowercase.
-    If given 'First Last', we will still try to convert to 'lastfirst'.
-    """
-    if not name:
-        return ""
-    s = str(name).strip()
+# Bio mech util
 
-    # Prefer 'Last, First' forms if present
-    if "," in s:
-        last, first = [p.strip() for p in s.split(",", 1)]
+# ==== Bio-Mech loader that prefers local combined CSV (from parse_biomech.py) ====
+@st.cache_data(show_spinner=False)
+def load_biomech_data() -> pd.DataFrame:
+    local_path = os.path.join("biomech_clean", "biomech_all.csv")
+    if os.path.exists(local_path):
+        df = pd.read_csv(local_path)
+        if "DATE" in df.columns:
+            df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
+        # numeric coercion for metrics
+        for c in df.columns:
+            if c not in ("Player","PlayerKey","DATE","PREP_TIME"):
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+        return df.sort_values(["Player","DATE"], na_position="last")
+    # fallback: live workbook (your existing function)
+    return load_biomech_workbook()
+
+
+def _biomech_summary(one: pd.DataFrame) -> pd.DataFrame:
+    """
+    Returns a single-row DF with Events (unique dates) and mean of Fresh/Post metrics.
+    """
+    if one.empty:
+        return pd.DataFrame()
+
+    metrics = ["RSI","PP","ECC_PP","JH"]
+    res = {}
+
+    # Events = unique non-null dates within the filtered set
+    if "DATE" in one.columns:
+        res["Events"] = int(one["DATE"].dropna().dt.normalize().nunique())
     else:
-        # handle 'First Last' fallback
-        parts = re.sub(r"\s+", " ", s).split(" ")
-        if len(parts) >= 2:
-            first = " ".join(parts[:-1])
-            last  = parts[-1]
-        else:
-            first = s
-            last = ""
+        res["Events"] = int(len(one))
 
-    last = re.sub(r"[^A-Za-z]", "", last)
-    first = re.sub(r"[^A-Za-z]", "", first)
-    return (last + first).lower()
+    for m in metrics:
+        fcol = f"Fresh_{m}"
+        pcol = f"Post_{m}"
+        if fcol in one.columns:
+            res[f"Fresh_{m}"] = float(np.nanmean(one[fcol].values))
+        if pcol in one.columns:
+            res[f"Post_{m}"] = float(np.nanmean(one[pcol].values))
+        # Optional delta:
+        if fcol in one.columns and pcol in one.columns:
+            fmean = np.nanmean(one[fcol].values)
+            pmean = np.nanmean(one[pcol].values)
+            res[f"Δ_{m}"] = float(pmean - fmean) if not (np.isnan(fmean) or np.isnan(pmean)) else np.nan
+
+    # include velo/weight averages if present
+    for extra in ["TOP_VELO","lbs"]:
+        if extra in one.columns:
+            res[f"Avg_{extra}"] = float(np.nanmean(one[extra].values))
+
+    # tidy display order
+    cols = ["Events",
+            "Fresh_RSI","Post_RSI","Δ_RSI",
+            "Fresh_PP","Post_PP","Δ_PP",
+            "Fresh_ECC_PP","Post_ECC_PP","Δ_ECC_PP",
+            "Fresh_JH","Post_JH","Δ_JH",
+            "Avg_TOP_VELO","Avg_lbs"]
+    cols = [c for c in cols if c in res]
+    out = pd.DataFrame([{k: res.get(k, np.nan) for k in cols}])
+    # round nicely
+    for c in out.columns:
+        if c != "Events":
+            out[c] = out[c].round(2)
+    return out
+# End of bio mech util
 
 # -----------------------------------------------------------------------------------
 # Loaders
@@ -1320,31 +1363,84 @@ with tab_flight:
 with tab_biomech:
     st.subheader("Bio Mech Data")
 
-    bio_df = load_biomech_workbook()
+    bio_df = load_biomech_data()
     if bio_df.empty:
-        st.info("No player-style biomech tabs parsed from the Google Sheet.")
+        st.info("No player-style biomech data available.")
     else:
-        # Sidebar pitcher is already 'Last, First' per your note
+        # Link sidebar pitcher to biomech by canonical key
         sb_key = canon_key_last_first(pitcher_name)
 
-        # Try exact key match (handles Last,First vs Last, First automatically)
+        # If not found, offer a selector over biomech players
         if sb_key and (bio_df["PlayerKey"] == sb_key).any():
             player_choice = bio_df.loc[bio_df["PlayerKey"] == sb_key, "Player"].iloc[0]
-            st.caption(f"Linked to Google Sheet tab: **{player_choice}**")
+            st.caption(f"Linked to Bio-Mech data for: **{player_choice}**")
         else:
-            # Fallback to selector over player tabs only
             players_bio = sorted(bio_df["Player"].dropna().unique().tolist())
-            # try loose match without comma as a courtesy
-            no_comma = pitcher_name.replace(",", "")
+            # best-effort preselect
             pref_index = 0
-            for i, p in enumerate(players_bio):
-                if canon_key_last_first(p) == sb_key or p.replace(",", "") == no_comma:
-                    pref_index = i
-                    break
-            player_choice = st.selectbox("Choose Bio-Mech Player (from Google Sheet tabs):", players_bio, index=pref_index)
+            try:
+                pref_index = players_bio.index(next(p for p in players_bio if canon_key_last_first(p) == sb_key))
+            except StopIteration:
+                pass
+            player_choice = st.selectbox("Choose Bio-Mech Player:", players_bio, index=pref_index)
 
-        one = bio_df[bio_df["Player"] == player_choice].copy()
+        one_all = bio_df[bio_df["Player"] == player_choice].copy()
 
+        # ---- Date filter UI specific to Bio-Mech ----
+        dates_available = []
+        if "DATE" in one_all.columns:
+            dates_available = sorted(one_all["DATE"].dropna().dt.date.unique().tolist())
+
+        st.markdown("##### Date Filter (Bio-Mech)")
+        dcol1, dcol2, dcol3 = st.columns([1.2, 1, 1.2])
+        with dcol1:
+            bio_date_mode = st.radio("Mode", ["All", "Single Date", "Date Range"], horizontal=True, key="bio_date_mode")
+        with dcol2:
+            if bio_date_mode == "Single Date":
+                if dates_available:
+                    single_date = st.selectbox("Date", options=dates_available, index=len(dates_available)-1)
+                else:
+                    single_date = None
+            else:
+                single_date = None
+        with dcol3:
+            if bio_date_mode == "Date Range":
+                if dates_available:
+                    default_start = dates_available[0]
+                    default_end   = dates_available[-1]
+                    date_start, date_end = st.date_input("Range", value=[default_start, default_end], min_value=default_start, max_value=default_end)
+                    # streamlit can return a single date if user clears one end—normalize
+                    if isinstance(date_start, list) or isinstance(date_start, tuple):
+                        # safeguard, though streamlit usually returns tuple via value
+                        date_start, date_end = date_start
+                else:
+                    date_start, date_end = None, None
+            else:
+                date_start, date_end = None, None
+
+        # Apply date filter to a working copy
+        one = one_all.copy()
+        if "DATE" in one.columns:
+            if bio_date_mode == "Single Date" and single_date:
+                one = one[one["DATE"].dt.date == pd.to_datetime(single_date).date()]
+            elif bio_date_mode == "Date Range" and date_start and date_end:
+                sdt = pd.to_datetime(date_start)
+                edt = pd.to_datetime(date_end)
+                one = one[(one["DATE"] >= sdt) & (one["DATE"] <= edt)]
+
+        # ---- Summary (averages across selected dates) ----
+        st.markdown("#### Summary (Averages over selected dates)")
+        summary_df = _biomech_summary(one)
+        if summary_df.empty:
+            st.info("No biomech rows in the selected window.")
+        else:
+            st.dataframe(summary_df, use_container_width=True)
+
+        # Show available dates for convenience
+        if dates_available:
+            st.caption("Available dates: " + ", ".join(pd.Series(dates_available).astype(str).tolist()))
+
+        # ---- Detailed per-date tables (Fresh / Post) ----
         base_cols = [c for c in ["DATE","PREP_TIME","TOP_VELO","lbs"] if c in one.columns]
         fresh_cols = [c for c in one.columns if c.startswith("Fresh_")]
         post_cols  = [c for c in one.columns if c.startswith("Post_")]
@@ -1353,23 +1449,23 @@ with tab_biomech:
             out = df.copy()
             for c in out.columns:
                 if pd.api.types.is_numeric_dtype(out[c]):
-                    out[c] = out[c].round(1)
+                    out[c] = out[c].round(2)
             return out
 
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown("**Fresh**")
+            st.markdown("**Fresh — per event**")
             fresh = one[base_cols + fresh_cols] if fresh_cols else pd.DataFrame()
             st.dataframe(_fmt(fresh), use_container_width=True) if not fresh.empty else st.write("—")
 
         with c2:
-            st.markdown("**Post**")
+            st.markdown("**Post — per event**")
             post = one[base_cols + post_cols] if post_cols else pd.DataFrame()
             st.dataframe(_fmt(post), use_container_width=True) if not post.empty else st.write("—")
 
-        # Optional: date-aligned Post − Fresh deltas
-        have_f = set(["Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"]).issubset(one.columns)
-        have_p = set(["Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]).issubset(one.columns)
+        # ---- Optional: date-aligned Post − Fresh deltas table ----
+        have_f = set([f"Fresh_{m}" for m in ["RSI","PP","ECC_PP","JH"]]).issubset(one.columns)
+        have_p = set([f"Post_{m}" for m in ["RSI","PP","ECC_PP","JH"]]).issubset(one.columns)
         if "DATE" in one.columns and have_f and have_p:
             f = one[["DATE","Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"]]
             p = one[["DATE","Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]]
@@ -1378,9 +1474,8 @@ with tab_biomech:
                 joined[f"Δ_{m}"] = joined[f"Post_{m}"] - joined[f"Fresh_{m}"]
             show = joined[["DATE","Δ_RSI","Δ_PP","Δ_ECC_PP","Δ_JH"]]
             if not show.empty:
-                st.markdown("**Deltas (Post − Fresh)**")
+                st.markdown("**Per-Date Deltas (Post − Fresh)**")
                 st.dataframe(_fmt(show), use_container_width=True)
-
 
 
 
