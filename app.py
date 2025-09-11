@@ -102,6 +102,32 @@ def canonical_pitch_type(row) -> str:
         raw = str(row.get("AutoPitchType") or "").strip()
     return PITCH_NORMALIZE_MAP.get(raw, raw if raw else "Unknown")
 
+def canon_key_last_first(name: str) -> str:
+    """
+    Given 'Last, First' or 'Last,First' (any case/spacing), return 'lastfirst' lowercase.
+    If given 'First Last', we will still try to convert to 'lastfirst'.
+    """
+    if not name:
+        return ""
+    s = str(name).strip()
+
+    # Prefer 'Last, First' forms if present
+    if "," in s:
+        last, first = [p.strip() for p in s.split(",", 1)]
+    else:
+        # handle 'First Last' fallback
+        parts = re.sub(r"\s+", " ", s).split(" ")
+        if len(parts) >= 2:
+            first = " ".join(parts[:-1])
+            last  = parts[-1]
+        else:
+            first = s
+            last = ""
+
+    last = re.sub(r"[^A-Za-z]", "", last)
+    first = re.sub(r"[^A-Za-z]", "", first)
+    return (last + first).lower()
+
 # -----------------------------------------------------------------------------------
 # Loaders
 # -----------------------------------------------------------------------------------
@@ -137,79 +163,83 @@ if TEAM_FILTER and "PitcherTeam" in season_df.columns:
 
 ### Bio Mech Functions
 
-def _looks_like_player_sheet(raw: pd.DataFrame, sheet_name: str) -> bool:
-    """Heuristic to skip the summary/averages sheet and any junk tabs."""
-    if raw is None or raw.empty or raw.shape[0] < 3:
-        return False
-    # Skip obvious summaries
-    nm = (sheet_name or "").upper()
-    if "AVERAGE" in nm or "AVERAGES" in nm or "FORCE PLATE" in nm or "OLE MISS" in nm:
-        return False
-    # Band row often at index 1; must contain Fresh/Post somewhere
-    band_row = raw.iloc[1].astype(str).str.upper()
-    contains_band = band_row.str.contains("FRESH|POST", regex=True).any()
-    return bool(contains_band)
+_PLAYER_RE = re.compile(r"^[A-Za-z .'\-]+,\s*[A-Za-z .'\-]+$")  # LAST, FIRST or LAST,FIRST
+
+def _is_last_first(s: str) -> bool:
+    return bool(_PLAYER_RE.match((s or "").strip()))
 
 def _norm_band(x: str) -> str:
     x = str(x).strip().upper()
-    if x.startswith("FRESH"):
-        return "Fresh"
-    if x.startswith("POST"):
-        return "Post"
-    return ""   # shared columns like TOP VELO/lbs/DATE/PREP TIME
+    if x.startswith("FRESH"): return "Fresh"
+    if x.startswith("POST"):  return "Post"
+    return ""
 
-def _flatten_cols(bands_row, leaves_row):
-    bands = [ _norm_band(x) for x in bands_row.fillna(method="ffill") ]
-    leaves = [ str(x).strip() if pd.notna(x) else "" for x in leaves_row ]
+def _flatten_cols(bands_row: pd.Series, leaves_row: pd.Series):
+    bands = list(bands_row.fillna(method="ffill"))
+    leaves = [str(x).strip() if pd.notna(x) else "" for x in leaves_row]
     cols = []
     for b, l in zip(bands, leaves):
         l2 = re.sub(r"\s+", "_", l).replace("%", "Pct")
-        cols.append(l2 if not b else f"{b}_{l2}")
+        b2 = _norm_band(b)
+        cols.append(l2 if not b2 else f"{b2}_{l2}")
     return cols
 
 @st.cache_data(show_spinner=False)
 def load_biomech_workbook() -> pd.DataFrame:
+    # download once
     td = tempfile.mkdtemp()
     xlsx_path = os.path.join(td, "bio_mech.xlsx")
     gdown.download(url=BIOMECH_EXPORT_XLSX_URL, output=xlsx_path, quiet=True)
 
-    all_sheets = pd.read_excel(xlsx_path, sheet_name=None, header=None, engine="openpyxl")
+    sheets = pd.read_excel(xlsx_path, sheet_name=None, header=None, engine="openpyxl")
     frames = []
 
-    for sheet_name, raw in all_sheets.items():
-        if not _looks_like_player_sheet(raw, sheet_name):
+    for sheet_name, raw in sheets.items():
+        if raw is None or raw.empty or raw.shape[0] < 3:
             continue
 
-        # Row0: player title (sometimes blank) — fall back to sheet_name
         title_cell = str(raw.iat[0, 0]).strip() if pd.notna(raw.iat[0, 0]) else ""
-        player = title_cell if title_cell and title_cell.upper() != "NAN" else sheet_name
+        # Accept player if either A1 or the tab name is LAST, FIRST/LAST,FIRST
+        if _is_last_first(title_cell):
+            player_display = title_cell
+        elif _is_last_first(str(sheet_name)):
+            player_display = str(sheet_name)
+        else:
+            # skip non-player tabs (e.g., OLE MISS AVERAGES)
+            continue
 
-        # Build columns from 2 header rows
+        band_row = raw.iloc[1].astype(str).str.upper()
+        if not band_row.str.contains("FRESH|POST", regex=True).any():
+            continue
+
         cols = _flatten_cols(raw.iloc[1], raw.iloc[2])
-
         df = raw.iloc[3:].copy()
         df.columns = cols
         df = df.dropna(how="all")
         if df.empty:
             continue
 
-        # Keep only columns we understand; tolerate missing ones
-        base_cols = ["TOP_VELO", "lbs", "DATE", "PREP_TIME"]
-        metric_cols = ["Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH",
-                       "Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]
-        keep = [c for c in df.columns if c in base_cols + metric_cols]
+        # Base cols & fixes
+        if "Ibs" in df.columns and "lbs" not in df.columns:
+            df = df.rename(columns={"Ibs": "lbs"})
+        base_cols = [c for c in ["TOP_VELO", "lbs", "DATE", "PREP_TIME"] if c in df.columns]
+        fresh_cols = [c for c in df.columns if c.startswith("Fresh_")]
+        post_cols  = [c for c in df.columns if c.startswith("Post_")]
+        keep = base_cols + fresh_cols + post_cols
         if not keep:
             continue
-        df = df[keep]
 
-        # Add player + coerce
-        df.insert(0, "Player", player)
+        df = df[keep].copy()
+        df.insert(0, "Player", player_display)
+        df.insert(1, "PlayerKey", canon_key_last_first(player_display))
+
         if "DATE" in df.columns:
             df["DATE"] = pd.to_datetime(df["DATE"], errors="coerce")
         if "PREP_TIME" in df.columns:
             df["PREP_TIME"] = df["PREP_TIME"].astype(str).str.strip()
+
         for c in df.columns:
-            if c not in ("Player", "DATE", "PREP_TIME"):
+            if c not in ("Player", "PlayerKey", "DATE", "PREP_TIME"):
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
         frames.append(df)
@@ -221,59 +251,6 @@ def load_biomech_workbook() -> pd.DataFrame:
     if "DATE" in out.columns:
         out = out.sort_values(["Player", "DATE"], na_position="last")
     return out
-
-def _candidate_names_from_first_last(full_name: str):
-    """Generate robust variants we might see on the tabs."""
-    full_name = (full_name or "").strip()
-    if not full_name:
-        return []
-    parts = re.sub(r"\s+", " ", full_name).strip().split(" ")
-    if len(parts) < 2:
-        return [full_name]
-    first = " ".join(parts[:-1])
-    last = parts[-1]
-    variants = [
-        f"{last}, {first}",
-        f"{last},{first}",
-        f"{last.upper()}, {first.upper()}",
-        f"{last.upper()},{first.upper()}",
-        f"{last.title()}, {first.title()}",
-        f"{last.title()},{first.title()}",
-        full_name,                    # First Last
-        full_name.upper(),            # FIRST LAST
-        full_name.title(),            # First Last
-    ]
-    # dedupe while keeping order
-    seen, out = set(), []
-    for v in variants:
-        if v not in seen:
-            seen.add(v); out.append(v)
-    return out
-
-def _best_biomech_player_match(df_all: pd.DataFrame, target_name: str) -> str:
-    """
-    Prefer exact match to any of the candidate variants,
-    else fall back to token overlap score.
-    """
-    if df_all.empty or "Player" not in df_all.columns:
-        return ""
-    players = [str(p) for p in df_all["Player"].dropna().unique().tolist()]
-    # exact candidates first
-    for cand in _candidate_names_from_first_last(target_name):
-        for p in players:
-            if p.strip().upper() == cand.strip().upper():
-                return p
-    # fallback: token overlap
-    tgt = re.sub(r"[^A-Z ]", " ", target_name.upper())
-    tgt_tokens = set(tgt.split())
-    best, best_score = "", -1
-    for p in players:
-        tokens = set(re.sub(r"[^A-Z ]", " ", p.upper()).split())
-        score = len(tokens & tgt_tokens)
-        if score > best_score:
-            best, best_score = p, score
-    return best
-
 
 
 # -----------------------------------------------------------------------------------
@@ -1345,18 +1322,26 @@ with tab_biomech:
 
     bio_df = load_biomech_workbook()
     if bio_df.empty:
-        st.info("No Bio-Mech workbook data found or no player-style tabs parsed.")
+        st.info("No player-style biomech tabs parsed from the Google Sheet.")
     else:
-        # Auto-pick the biomech tab that matches the sidebar pitcher_name
-        matched_player = _best_biomech_player_match(bio_df, pitcher_name)
+        # Sidebar pitcher is already 'Last, First' per your note
+        sb_key = canon_key_last_first(pitcher_name)
 
-        if not matched_player:
-            # If we truly can't match, fall back to a selector (but hide summaries)
-            players_bio = sorted(bio_df["Player"].dropna().unique().tolist())
-            player_choice = st.selectbox("Choose Bio-Mech Player (from Google Sheet tabs):", players_bio)
+        # Try exact key match (handles Last,First vs Last, First automatically)
+        if sb_key and (bio_df["PlayerKey"] == sb_key).any():
+            player_choice = bio_df.loc[bio_df["PlayerKey"] == sb_key, "Player"].iloc[0]
+            st.caption(f"Linked to Google Sheet tab: **{player_choice}**")
         else:
-            player_choice = matched_player
-            st.caption(f"Linked to Google Sheet tab: **{player_choice}** (auto-matched to your selected pitcher)")
+            # Fallback to selector over player tabs only
+            players_bio = sorted(bio_df["Player"].dropna().unique().tolist())
+            # try loose match without comma as a courtesy
+            no_comma = pitcher_name.replace(",", "")
+            pref_index = 0
+            for i, p in enumerate(players_bio):
+                if canon_key_last_first(p) == sb_key or p.replace(",", "") == no_comma:
+                    pref_index = i
+                    break
+            player_choice = st.selectbox("Choose Bio-Mech Player (from Google Sheet tabs):", players_bio, index=pref_index)
 
         one = bio_df[bio_df["Player"] == player_choice].copy()
 
@@ -1382,18 +1367,20 @@ with tab_biomech:
             post = one[base_cols + post_cols] if post_cols else pd.DataFrame()
             st.dataframe(_fmt(post), use_container_width=True) if not post.empty else st.write("—")
 
-        # Optional deltas (Post − Fresh) aligned by DATE
-        if {"DATE"}.issubset(one.columns) and set(["Fresh_RSI","Post_RSI"]).issubset(one.columns):
-            f = one[["DATE","Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"]].dropna(how="all", subset=["Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"])
-            p = one[["DATE","Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]].dropna(how="all", subset=["Post_RSI","Post_PP","Post_ECC_PP","Post_JH"])
+        # Optional: date-aligned Post − Fresh deltas
+        have_f = set(["Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"]).issubset(one.columns)
+        have_p = set(["Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]).issubset(one.columns)
+        if "DATE" in one.columns and have_f and have_p:
+            f = one[["DATE","Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"]]
+            p = one[["DATE","Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]]
             joined = f.merge(p, on="DATE", how="inner")
             for m in ["RSI","PP","ECC_PP","JH"]:
-                if f"Fresh_{m}" in joined.columns and f"Post_{m}" in joined.columns:
-                    joined[f"Δ_{m}"] = joined[f"Post_{m}"] - joined[f"Fresh_{m}"]
-            show = joined[["DATE"] + [c for c in joined.columns if c.startswith("Δ_")]]
+                joined[f"Δ_{m}"] = joined[f"Post_{m}"] - joined[f"Fresh_{m}"]
+            show = joined[["DATE","Δ_RSI","Δ_PP","Δ_ECC_PP","Δ_JH"]]
             if not show.empty:
                 st.markdown("**Deltas (Post − Fresh)**")
                 st.dataframe(_fmt(show), use_container_width=True)
+
 
 
 
