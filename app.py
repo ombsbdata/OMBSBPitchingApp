@@ -583,8 +583,11 @@ def generate_pitch_traits_table():
                 RelS=("RelSide", "mean"),
                 Ext=("Extension", "mean"),
                 VAA=("VertApprAngle", "mean"),
+                StuffPlus=("StuffPlus", "mean")  # <- use filtered rows directly
             )
             .reset_index()
+        )
+
         )
 
         # --- FIX 1: StuffPlus merge on canonical keys (Pitcher + PitchType)
