@@ -13,6 +13,10 @@ import plotly.graph_objects as go
 import os, re, tempfile
 import gdown
 
+#stuff calculator render
+from stuff_calculator_lgbm import render_stuff_calculator_tab
+
+
 
 # -----------------------------------------------------------------------------------
 # Config / constants
@@ -1380,7 +1384,10 @@ def render_rolling_average_charts_tab():
 
 
 # === RENDER ===
-tab_flight, tab_biomech, tab_roll = st.tabs(["Pitch Flight Data", "Bio Mech Data", "Rolling Average Charts"])
+tab_flight, tab_biomech, tab_roll, tab_calc = st.tabs(
+    ["Pitch Flight Data", "Bio Mech Data", "Rolling Average Charts", "Stuff+ Calculator"]
+)
+
 
 with tab_flight:
     plot_heatmaps(heatmap_type)
@@ -1520,5 +1527,16 @@ with tab_biomech:
 
 with tab_roll:
     render_rolling_average_charts_tab()
+
+
+with tab_calc:
+    # Try to pass the currently selected pitcher's most-used pitch type as default
+    default_pt = None
+    if "PitchType" in filtered_df.columns and not filtered_df.empty:
+        counts = (filtered_df.groupby("PitchType")["PitchType"].size().sort_values(ascending=False))
+        if not counts.empty:
+            default_pt = counts.index[0]
+    render_stuff_calculator_tab(season_df, default_pitcher=pitcher_name, default_pitch_type=default_pt)
+
 
 
