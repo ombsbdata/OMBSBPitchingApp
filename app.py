@@ -588,7 +588,7 @@ def generate_pitch_traits_table():
             .reset_index()
         )
 
-        )
+        
 
         # --- FIX 1: StuffPlus merge on canonical keys (Pitcher + PitchType)
         # --- Stuff+ merge: collapse to one row per PitchType for this pitcher
