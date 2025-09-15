@@ -1,0 +1,38 @@
+{
+  "Fastball": {
+    "RelSpeed": 90.921655,
+    "SpinRate": 2214.4859605,
+    "spinDir": 204.118513,
+    "RelHeight": 5.89237,
+    "RelSide": -1.68293,
+    "Extension": 5.956785,
+    "InducedVertBreak": 16.22969,
+    "HorzBreak": 10.97044
+  },
+  "Breaking": {
+    "RelSpeed": 80.51977926665,
+    "SpinRate": 2371.72106994,
+    "spinDir": 107.5012685,
+    "RelHeight": 5.83742,
+    "RelSide": -1.77869,
+    "Extension": 5.48341,
+    "InducedVertBreak": -0.46140000000000003,
+    "HorzBreak": -6.4329052849,
+    "delta_velo": -10.191313529411772,
+    "delta_IVB": -16.08984204018547,
+    "delta_HB": -13.329238384615383
+  },
+  "Offspeed": {
+    "RelSpeed": 82.08711,
+    "SpinRate": 1747.854619,
+    "spinDir": 229.111851033,
+    "RelHeight": 5.730605000000001,
+    "RelSide": -1.834065,
+    "Extension": 5.87241,
+    "InducedVertBreak": 8.29189,
+    "HorzBreak": 14.12607,
+    "delta_velo": -7.995438449436243,
+    "delta_IVB": -7.220435971057075,
+    "delta_HB": 1.1909208018867936
+  }
+}
