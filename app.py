@@ -571,6 +571,7 @@ def generate_pitch_traits_table():
             st.info("Pitch Traits requires standard pitch metrics; some columns are missing.")
             return
 
+        # Build the table entirely from the filtered slice
         grouped = (df
             .groupby("PitchType", dropna=False)
             .agg(
@@ -583,55 +584,45 @@ def generate_pitch_traits_table():
                 RelS=("RelSide", "mean"),
                 Ext=("Extension", "mean"),
                 VAA=("VertApprAngle", "mean"),
-                StuffPlus=("StuffPlus", "mean")  # <- use filtered rows directly
+                StuffPlus=("StuffPlus", "mean")  # stays aligned with filters
             )
             .reset_index()
         )
 
         
 
-        # --- FIX 1: StuffPlus merge on canonical keys (Pitcher + PitchType)
-        # --- Stuff+ merge: collapse to one row per PitchType for this pitcher
-        sp = stuff_df.copy()
-        if not sp.empty:
-            sp = sp[sp["Pitcher"] == pitcher_name]
-        
-            # If StuffPlus exists per-pitch/per-game, collapse to a single value per PitchType.
-            # Mean is common; switch to median or last if you prefer.
-            sp = (sp
-                  .groupby("PitchType", as_index=False, observed=True)
-                  .agg(StuffPlus=("StuffPlus", "mean")))
-        
-            # Now this is 1:1 by PitchType → safe to merge
-            grouped = grouped.merge(sp, on="PitchType", how="left", validate="one_to_one")
 
 
         # sort by usage
         grouped = grouped.sort_values("Count", ascending=False)
-
+        
         # weighted "All" row
         total = grouped["Count"].sum()
+        
         def wavg(col):
+            if col not in grouped.columns:
+                return np.nan
             vals = grouped[col]
             mask = vals.notna()
             if not mask.any():
                 return np.nan
             return np.average(vals[mask], weights=grouped.loc[mask, "Count"])
-
+        
         all_row = {
             "PitchType": "All",
-            "Count": total,
-            "Velo": round(wavg("Velo"), 1) if pd.notna(wavg("Velo")) else np.nan,
-            "iVB": round(wavg("iVB"), 1) if pd.notna(wavg("iVB")) else np.nan,
-            "HB": round(wavg("HB"), 1) if pd.notna(wavg("HB")) else np.nan,
-            "Spin": round(wavg("Spin"), 1) if pd.notna(wavg("Spin")) else np.nan,
-            "RelH": round(wavg("RelH"), 1) if pd.notna(wavg("RelH")) else np.nan,
-            "RelS": round(wavg("RelS"), 1) if pd.notna(wavg("RelS")) else np.nan,
-            "Ext": round(wavg("Ext"), 1) if pd.notna(wavg("Ext")) else np.nan,
-            "VAA": round(wavg("VAA"), 1) if pd.notna(wavg("VAA")) else np.nan,
-            "StuffPlus": round(wavg("StuffPlus"), 1) if ("StuffPlus" in grouped.columns and pd.notna(wavg("StuffPlus"))) else np.nan
+            "Count": int(total),
+            "Velo": round(wavg("Velo"), 1),
+            "iVB": round(wavg("iVB"), 1),
+            "HB": round(wavg("HB"), 1),
+            "Spin": round(wavg("Spin"), 1),
+            "RelH": round(wavg("RelH"), 1),
+            "RelS": round(wavg("RelS"), 1),
+            "Ext": round(wavg("Ext"), 1),
+            "VAA": round(wavg("VAA"), 1),
+            "StuffPlus": round(wavg("StuffPlus"), 1)
         }
         grouped = pd.concat([grouped, pd.DataFrame([all_row])], ignore_index=True)
+
 
         display = grouped.rename(columns={"PitchType": "Pitch"})
         st.subheader("Pitch Traits")
