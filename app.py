@@ -468,7 +468,7 @@ def fmt_percent(x: float) -> str:
 
 def format_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     out = df.copy()
-    percent_cols = ['InZone%', 'Swing%', 'Whiff%', 'Chase%', 'InZoneWhiff%', 'Pitch%', 'Hard%', 'Soft%', 'GB%', 'FB%', 'Contact%']
+    percent_cols = ['InZone%', 'Swing%','Whiff%', 'SwStr%', 'Chase%', 'InZoneWhiff%', 'Pitch%', 'Hard%', 'Soft%', 'GB%', 'FB%', 'Contact%']
     for c in out.columns:
         if c in percent_cols:
             out[c] = out[c].apply(lambda v: fmt_percent(v) if isinstance(v, (int, float, np.floating)) else v)
@@ -651,28 +651,30 @@ def generate_plate_discipline_table():
             in_zone = calculate_in_zone(slice_df)
             swing_flags = ["StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"]
             strike_flags = ["StrikeCalled", "FoulBallFieldable", "FoulBallNotFieldable", "StrikeSwinging", "InPlay"]
-
-            # First pitch
+        
             fp_df = slice_df[(slice_df["Balls"] == 0) & (slice_df["Strikes"] == 0)]
             fp_total = len(fp_df)
             fp_strikes = fp_df[~fp_df["PitchCall"].isin(["HitByPitch", "BallCalled", "BallInDirt", "BallinDirt"])].shape[0]
             fp_strike_pct = (fp_strikes / fp_total * 100) if fp_total > 0 else 0
-
+        
             swings = slice_df[slice_df["PitchCall"].isin(swing_flags)].shape[0]
             whiffs = slice_df[slice_df["PitchCall"] == "StrikeSwinging"].shape[0]
             chase = slice_df[(~slice_df.index.isin(in_zone.index)) & (slice_df["PitchCall"].isin(swing_flags))].shape[0]
             in_zone_whiffs = in_zone[in_zone["PitchCall"] == "StrikeSwinging"].shape[0]
             strikes_all = slice_df[slice_df["PitchCall"].isin(strike_flags)].shape[0]
-
+            total = len(slice_df)
+        
             return {
-                "InZone%": (len(in_zone) / len(slice_df) * 100) if len(slice_df) else 0,
-                "Swing%": (swings / len(slice_df) * 100) if len(slice_df) else 0,
+                "InZone%": (len(in_zone) / total * 100) if total else 0,
+                "Swing%": (swings / total * 100) if total else 0,
                 "Whiff%": (whiffs / swings * 100) if swings else 0,
+                "SwStr%": (whiffs / total * 100) if total else 0,   # <-- new
                 "Chase%": (chase / swings * 100) if swings else 0,
                 "InZoneWhiff%": (in_zone_whiffs / len(in_zone) * 100) if len(in_zone) else 0,
-                "Strike%": (strikes_all / len(slice_df) * 100) if len(slice_df) else 0,
+                "Strike%": (strikes_all / total * 100) if total else 0,
                 "FP Strike%": fp_strike_pct
             }
+
 
         grp = df.groupby("PitchType").apply(lambda x: pd.Series(calc_metrics(x))).reset_index()
         counts = df.groupby("PitchType")["PitchType"].count().rename("Count").reset_index()
@@ -688,10 +690,12 @@ def generate_plate_discipline_table():
             **all_metrics
         }
         table = pd.concat([table, pd.DataFrame([all_row])], ignore_index=True)
-
+        
         display = table.rename(columns={"PitchType": "Pitch"})
         st.subheader("Plate Discipline")
-        st.dataframe(format_dataframe(display[["Pitch","Count","Pitch%","Strike%","InZone%","Swing%","Whiff%","Chase%","InZoneWhiff%","FP Strike%"]]))
+        cols = ["Pitch","Count","Pitch%","Strike%","InZone%","Swing%","Whiff%","SwStr%","Chase%","InZoneWhiff%","FP Strike%"]
+        st.dataframe(format_dataframe(display[cols]))
+
     except Exception as e:
         st.error(f"An error occurred while generating the plate discipline table: {e}")
 
