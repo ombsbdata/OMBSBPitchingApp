@@ -16,6 +16,18 @@ import gdown
 #stuff calculator render
 from stuff_calculator_lgbm import render_stuff_calculator_tab
 
+st.set_page_config(layout="wide", initial_sidebar_state="expanded")
+
+def _max_width(px=1700):
+    st.markdown(
+        f"""
+        <style>
+          .block-container {{ max-width: {px}px; padding-left: 1rem; padding-right: 1rem; }}
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+_max_width(1700)  # bump to taste (1600–1800 is nice)
 
 
 # -----------------------------------------------------------------------------------
@@ -488,12 +500,14 @@ def _render_two_cols(figs, header=None):
         st.info("No charts to display.")
         return
     for i in range(0, len(figs), 2):
-        c1, c2 = st.columns(2, gap="medium")
+        # if your Streamlit doesn’t support 'gap', just drop the arg
+        c1, c2 = st.columns([1, 1], gap="small")
         with c1:
             st.plotly_chart(figs[i], use_container_width=True)
         if i + 1 < len(figs):
             with c2:
                 st.plotly_chart(figs[i + 1], use_container_width=True)
+
 
 
 
@@ -942,6 +956,11 @@ def plot_release_and_approach_angles():
     except Exception as e:
         st.error(f"An error occurred while generating the angle plots: {e}")
 
+def _tight_layout(fig):
+    fig.update_layout(autosize=True, margin=dict(l=20, r=10, t=60, b=40))
+    return fig
+
+
 def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
     try:
         df = rolling_df.copy()
@@ -1009,6 +1028,7 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
             
                 fig.update_layout(xaxis_title="Date", yaxis_title=label, legend_title="Pitch Type",
                                   template="plotly_white", hovermode="x unified")
+                fig = _tight_layout(fig)
                 figs.append(fig)
             
             _render_two_cols(figs, header="Rolling Averages Across Full Database (Date-by-Date)")
@@ -1050,6 +1070,7 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
                 fig.update_xaxes(range=[day["PitchNo"].min() - 1, day["PitchNo"].max() + 1])
                 fig.update_layout(xaxis_title="Pitch #", yaxis_title=label, legend_title="Pitch Type",
                                   template="plotly_white", hovermode="x unified")
+                fig = _tight_layout(fig)
                 figs.append(fig)
             
             _render_two_cols(figs, header=f"Pitch-by-Pitch View for {xdt.strftime('%B %d, %Y')}")
