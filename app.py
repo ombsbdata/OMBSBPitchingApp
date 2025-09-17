@@ -481,6 +481,22 @@ def format_dataframe(df: pd.DataFrame) -> pd.DataFrame:
 # -----------------------------------------------------------------------------------
 # Visuals
 # -----------------------------------------------------------------------------------
+def _render_two_cols(figs, header=None):
+    if header:
+        st.subheader(header)
+    if not figs:
+        st.info("No charts to display.")
+        return
+    for i in range(0, len(figs), 2):
+        c1, c2 = st.columns(2, gap="medium")
+        with c1:
+            st.plotly_chart(figs[i], use_container_width=True)
+        if i + 1 < len(figs):
+            with c2:
+                st.plotly_chart(figs[i + 1], use_container_width=True)
+
+
+
 def plot_heatmaps(map_type: str):
     try:
         pitcher_data = filtered_df.copy()
@@ -965,7 +981,7 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
                       .reset_index()
                       .sort_values("Date"))
 
-            st.subheader("Rolling Averages Across Full Database (Date-by-Date)")
+            figs = []
             for metric, label in metrics:
                 if metric not in roll.columns:
                     continue
@@ -983,7 +999,6 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
                         marker=dict(size=6, color=color_map.get(pt, "black"), opacity=0.6),
                         name=f"{pt} points", showlegend=False
                     )
-
                 # highlight active filter window, if any
                 if date_filter_option == "Single Date" and selected_date:
                     xdt = pd.to_datetime(selected_date)
@@ -991,10 +1006,13 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
                 elif date_filter_option == "Date Range" and start_date and end_date:
                     sdt, edt = pd.to_datetime(start_date), pd.to_datetime(end_date)
                     fig.add_vrect(x0=sdt, x1=edt, fillcolor="gray", opacity=0.2, line_width=0)
-
+            
                 fig.update_layout(xaxis_title="Date", yaxis_title=label, legend_title="Pitch Type",
                                   template="plotly_white", hovermode="x unified")
-                st.plotly_chart(fig, use_container_width=True)
+                figs.append(fig)
+            
+            _render_two_cols(figs, header="Rolling Averages Across Full Database (Date-by-Date)")
+
 
         else:  # Pitch-by-Pitch (Single Date)
             if pitch_by_pitch_date is None:
@@ -1010,26 +1028,32 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
             if "PitchNo" in day.columns:
                 day["PitchNo"] = pd.to_numeric(day["PitchNo"], errors="coerce")
                 day = day.dropna(subset=["PitchNo"]).sort_values("PitchNo")
-            st.subheader(f"Pitch-by-Pitch View for {xdt.strftime('%B %d, %Y')}")
 
+
+            figs = []
             for metric, label in metrics:
                 if metric not in day.columns:
                     continue
                 fig = px.line(
                     day, x="PitchNo", y=metric, color="PitchType",
-                    title=f"{label} Pitch-by-Pitch", labels={"PitchNo": "Pitch #", metric: label, "PitchType": "Pitch Type"},
+                    title=f"{label} Pitch-by-Pitch",
+                    labels={"PitchNo": "Pitch #", metric: label, "PitchType": "Pitch Type"},
                     color_discrete_map=color_map, hover_data={"PitchNo": ":.0f", metric: ":.2f"},
                 )
                 for pt in day["PitchType"].unique():
                     sub = day[day["PitchType"] == pt]
                     fig.add_scatter(
                         x=sub["PitchNo"], y=sub[metric], mode="markers",
-                        marker=dict(size=8, color=color_map.get(pt, "black")), name=f"{pt} pts", showlegend=False
+                        marker=dict(size=8, color=color_map.get(pt, "black")),
+                        name=f"{pt} pts", showlegend=False
                     )
                 fig.update_xaxes(range=[day["PitchNo"].min() - 1, day["PitchNo"].max() + 1])
                 fig.update_layout(xaxis_title="Pitch #", yaxis_title=label, legend_title="Pitch Type",
                                   template="plotly_white", hovermode="x unified")
-                st.plotly_chart(fig, use_container_width=True)
+                figs.append(fig)
+            
+            _render_two_cols(figs, header=f"Pitch-by-Pitch View for {xdt.strftime('%B %d, %Y')}")
+
 
     except Exception as e:
         st.error(f"An error occurred while generating rolling line graphs: {e}")
