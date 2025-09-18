@@ -40,7 +40,7 @@ def map_pitch_type_to_family(pitch_type: str) -> str:
     pt = str(pitch_type).lower()
     if pt in {"four-seam", "fourseam", "ff", "sinker", "si", "two-seam"}:
         return "Fastball"
-    if pt in {"slider", "sl", "curveball", "cu", "sweeper", "kc", "cutter", "fc}:
+    if pt in {"slider", "sl", "curveball", "cu", "sweeper", "kc", "cutter", "fc"}:
         return "Breaking"
     if pt in {"changeup", "ch", "splitter", "fs", "forkball"}:
         return "Offspeed"
