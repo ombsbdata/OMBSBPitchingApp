@@ -1594,45 +1594,72 @@ with tab_biomech:
 
     styles = f"""
     <style>
-      .scroll-x {{ overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 10px; }}
-      table.workload {{ border-collapse: collapse; width: max-content; table-layout: fixed; }}
-      table.workload th, table.workload td {{
-        border: 1px solid #e6e6e6; padding: 3px 4px; text-align: center; font-size: 12px; height: {row_h}px;
-        white-space: nowrap;
+      .scroll-x {{
+        position: relative;            /* make this the sticky containing block */
+        overflow-x: auto;
+        border: 1px solid #e5e7eb; border-radius: 10px;
       }}
+    
+      /* Safari-friendly: no collapse when using sticky left */
+      table.workload {{
+        border-collapse: separate;     /* <-- changed from collapse */
+        border-spacing: 0;             /* keep grid look */
+        width: max-content;
+        table-layout: fixed;
+      }}
+    
+      table.workload th, table.workload td {{
+        border: 1px solid #e6e6e6;
+        padding: 3px 4px;
+        text-align: center;
+        font-size: 12px;
+        height: {row_h}px;
+        white-space: nowrap;
+        background-clip: padding-box;  /* avoids bleed under sticky edges */
+      }}
+    
+      /* sticky headers */
       table.workload thead th {{ position: sticky; top: 0; background: #f8fafc; z-index: 2; }}
       table.workload thead tr:nth-child(2) th {{ top: 26px; }}
       table.workload thead tr:nth-child(3) th {{ top: 52px; }}
-
-      /* sticky left columns */
+    
+      /* sticky left columns (both th & td) */
       .sticky-left   {{ position: sticky; left: 0px;  background: #fff; z-index: 3; text-align: left; font-weight: 600; }}
       .sticky-left-2 {{ position: sticky; left: {name_col_width}px; background: #fff; z-index: 3; }}
       .sticky-left-3 {{ position: sticky; left: {name_col_width + tot_col_width}px; background: #fff; z-index: 3; }}
-
+    
+      /* ensure header versions sit above month/day headers */
+      table.workload thead th.sticky-left,
+      table.workload thead th.sticky-left-2,
+      table.workload thead th.sticky-left-3 {{ z-index: 6; }}
+    
       /* totals styling */
       thead .tot-head {{ background: #eef6ff; font-weight: 700; }}
       tbody td.tot    {{ background: #f5faff; font-weight: 700; }}
-
+    
       /* EOW styling */
       thead .eow-head {{ background: #fff0e6; }}
       tbody td.eow    {{ background: #fff7f0; font-weight: 600; }}
-
+    
       tbody tr:nth-child(even) {{ background: #fcfcfc; }}
       tbody tr.hl {{ background: #fff7cc !important; font-weight: 700; }}
-
-      .name {{ min-width: {name_col_width}px; }}
-      .totcol {{ min-width: {tot_col_width}px; }}
-      .daycol {{ width: {day_cell_w}px; min-width: {day_cell_w}px; max-width: {day_cell_w}px; }}
+    
+      /* FIX: give both th and td identical, fixed widths */
+      .name  {{ width: {name_col_width}px; min-width: {name_col_width}px; max-width: {name_col_width}px; }}
+      .totcol{{ width: {tot_col_width}px;  min-width: {tot_col_width}px;  max-width: {tot_col_width}px;  }}
+      .daycol{{ width: {day_cell_w}px;     min-width: {day_cell_w}px;     max-width: {day_cell_w}px;     }}
     </style>
     """
+
 
     # Header rows
     h1 = (
         f"<tr>"
-        f"<th class='sticky-left' rowspan='3'>Pitcher</th>"
-        f"<th class='sticky-left-2 tot-head' rowspan='3' title='Total pitches in window'>Total P ({int(days_back)}d)</th>"
-        f"<th class='sticky-left-3 tot-head' rowspan='3' title='Total innings pitched in window'>Total IP ({int(days_back)}d)</th>"
+        f"<th class='sticky-left name' rowspan='3'>Pitcher</th>"
+        f"<th class='sticky-left-2 tot-head totcol' rowspan='3' title='Total pitches in window'>Total P ({int(days_back)}d)</th>"
+        f"<th class='sticky-left-3 tot-head totcol' rowspan='3' title='Total innings pitched in window'>Total IP ({int(days_back)}d)</th>"
     )
+
     for mon, span in month_spans.items():
         h1 += f"<th colspan='{span}'>{mon}</th>"
     h1 += "</tr>"
