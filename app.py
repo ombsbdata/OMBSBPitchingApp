@@ -558,7 +558,7 @@ def plot_heatmaps(map_type: str, grid=(60, 60), sigma=1.2, min_cell=4):
         k /= k.sum()
         return k
 
-    def _blur2d(M, s=1.2):
+    def _blur2d(M, s=15):
         if M.size == 0: return M
         r = int(3*s)
         k = _gauss1d(s, r)
