@@ -571,176 +571,181 @@ def _build_grid(df, xcol, ycol, xlim, ylim, bins):
 
 def plot_heatmaps(map_type: str):
     """
-    TruMedia-like: high-res grid, two-stage blur, global scale, gentle gamma.
-    Modes: Frequency (percent), Whiff (rate), Exit Velocity (mph -> normalized).
+    TruMedia-ish heatmaps:
+      - frequency only (other map types fall back to frequency)
+      - 2D histogram in plate space, smoothed with Gaussian
+      - shared color scale across subplots
     """
     try:
-        data = filtered_df.copy()
-        if data.empty:
+        import matplotlib.pyplot as plt
+        import matplotlib.patches as patches
+        import numpy as np
+        import pandas as pd
+        from matplotlib.colors import Normalize
+        try:
+            # preferred smoothing (fast & stable)
+            from scipy.ndimage import gaussian_filter
+            _HAVE_SCIPY = True
+        except Exception:
+            _HAVE_SCIPY = False
+
+        pitcher_data = filtered_df.copy()
+        if pitcher_data.empty:
             st.info("No data available for the selected parameters.")
             return
 
-        needed = {"PlateLocSide", "PlateLocHeight", "PitchCall"}
-        if not needed.issubset(data.columns):
-            st.info("Heatmap needs PlateLocSide, PlateLocHeight, PitchCall columns.")
+        needed = {"PlateLocSide", "PlateLocHeight", "PitchType"}
+        if not needed.issubset(pitcher_data.columns):
+            st.info("Heatmap needs PlateLocSide, PlateLocHeight, PitchType columns.")
             return
 
-        # ---- canvas & smoothing config ----
-        xcol, ycol = "PlateLocSide", "PlateLocHeight"
-        xlim = (-1.95, 1.95)
-        ylim = (0.9, 4.1)
-        BINS = 320                 # ↑ resolution for smoother maps
-        GAMMA = 0.85               # <1 brightens mids; TruMedia-ish softness
+        # --- config knobs (tune these to taste) ---------------------------------
+        N_COLS = 3                              # panels per row
+        PANEL_IN = 5.5                          # panel size in inches
+        GRID_PER_FT = 140                       # grid density (higher = smoother)
+        SIGMA_FT_BASE = 0.20                    # base Gaussian sigma in feet
+        SIGMA_FT_TINYBOOST = 0.35               # extra sigma for very small n
+        TINY_N = 8                              # n <= TINY_N gets extra smoothing
+        GLOBAL_VMAX_Q = 0.97                    # share color scale using 97th pct
+        CMAP = "turbo"                          # TruMedia-ish rainbow
+        # ------------------------------------------------------------------------
 
-        def sigma_for_n(n):
-            # adaptive blur in pixels; stronger when sample small
-            # two-stage blur gives round, organic shapes
-            if n < 10:   return 4.5, 2.2
-            if n < 30:   return 4.0, 2.0
-            if n < 80:   return 3.5, 1.8
-            if n < 200:  return 3.2, 1.6
-            return 3.0, 1.4
-
-        # colormaps + labels
-        if map_type == "Frequency":
-            cmap = plt.get_cmap("turbo")
-            cbar_label = "% of pitches"
-            value_kind = "pct"
-        elif map_type == "Whiff":
-            cmap = plt.get_cmap("plasma")
-            cbar_label = "Whiff rate (%)"
-            value_kind = "rate"
-        else:
-            cmap = plt.get_cmap("inferno")
-            cbar_label = "Exit Velo (mph)"
-            value_kind = "ev"
-
-        plot_data = data.dropna(subset=[xcol, ycol])
+        # Working slice
+        plot_data = pitcher_data.dropna(subset=["PlateLocSide", "PlateLocHeight"]).copy()
         if plot_data.empty:
             st.info("No data available to plot after filtering.")
             return
 
-        pitch_types = plot_data["PitchType"].dropna().unique().tolist()
-        if not pitch_types:
-            st.info("No pitch types available.")
-            return
+        # Plate extents (keep consistent across panels)
+        x_min, x_max = -2.0, 2.0
+        y_min, y_max =  1.0, 4.0
 
-        # ----- compute all images first to establish a shared color scale -----
-        images = []   # list of (pt, img, n, display_n)
-        raw_values_for_scale = []  # used to compute global vmin/vmax
+        # Strike-zone (your college zone dims)
+        zone_w = 1.66166
+        z_x0 = -zone_w / 2
+        z_y0 = 1.5
+        z_h  = 3.3775 - 1.5
 
-        for pt in pitch_types:
-            sub = plot_data[plot_data["PitchType"] == pt]
+        # Grid
+        width_ft  = (x_max - x_min)
+        height_ft = (y_max - y_min)
+        NX = max(64, int(width_ft  * GRID_PER_FT))
+        NY = max(64, int(height_ft * GRID_PER_FT))
+        x_edges = np.linspace(x_min, x_max, NX + 1)
+        y_edges = np.linspace(y_min, y_max, NY + 1)
+
+        # Prepare per-type smoothed fields and gather a global vmax
+        fields = []
+        vmax_pool = []
+
+        for pt in plot_data["PitchType"].unique():
+            sub = plot_data.loc[plot_data["PitchType"] == pt, ["PlateLocSide", "PlateLocHeight"]]
+            xs = sub["PlateLocSide"].values
+            ys = sub["PlateLocHeight"].values
             n = len(sub)
             if n == 0:
-                images.append((pt, None, 0, 0))
                 continue
 
-            sig1, sig2 = sigma_for_n(n)
-            H_cnt = _build_grid(sub, xcol, ycol, xlim, ylim, BINS)
+            # 2D histogram (counts per bin)
+            H, _, _ = np.histogram2d(xs, ys, bins=[x_edges, y_edges])
 
-            if value_kind == "pct":
-                base = H_cnt / max(n, 1)
-                base = _gaussian_blur_2d(base, sig1)
-                base = _gaussian_blur_2d(base, sig2)
-                # light background lift and normalize 0..1 globally later
-                images.append((pt, base, n, n))
-                raw_values_for_scale.append(base)
+            # convert to percentage of pitches
+            H = H / max(n, 1) * 100.0
 
-            elif value_kind == "rate":
-                swing_flags = ["StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"]
-                swings = sub[sub["PitchCall"].isin(swing_flags)]
-                whiffs = sub[sub["PitchCall"] == "StrikeSwinging"]
-                H_sw = _build_grid(swings, xcol, ycol, xlim, ylim, BINS) if len(swings) else np.zeros_like(H_cnt)
-                H_wh = _build_grid(whiffs, xcol, ycol, xlim, ylim, BINS) if len(whiffs) else np.zeros_like(H_cnt)
+            # Smoothing
+            if _HAVE_SCIPY:
+                # sigma in pixels: feet->pixels using grid resolution
+                sx_px = max(1.0, SIGMA_FT_BASE * (NX / width_ft))
+                sy_px = max(1.0, SIGMA_FT_BASE * (NY / height_ft))
+                if n <= TINY_N:
+                    sx_px += SIGMA_FT_TINYBOOST * (NX / width_ft)
+                    sy_px += SIGMA_FT_TINYBOOST * (NY / height_ft)
+                Hs = gaussian_filter(H.T, sigma=(sy_px, sx_px), mode="nearest").T
+            else:
+                # light fallback: simple box blur via convolution in numpy
+                k = int(max(3, round((SIGMA_FT_BASE * (NX / width_ft)) * 3)))
+                ker = np.ones((k, k), dtype=float)
+                ker /= ker.sum()
+                # pad, convolve, crop
+                pad = k // 2
+                P = np.pad(H, pad, mode="edge")
+                Hs = np.zeros_like(H)
+                for i in range(H.shape[0]):
+                    for j in range(H.shape[1]):
+                        Hs[i, j] = np.sum(P[i:i + k, j:j + k] * ker)
 
-                S_sw = _gaussian_blur_2d(_gaussian_blur_2d(H_sw, sig1), sig2)
-                S_wh = _gaussian_blur_2d(_gaussian_blur_2d(H_wh, sig1), sig2)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    rate = np.where(S_sw > 0, S_wh / S_sw, 0.0)
-                images.append((pt, rate, len(swings), len(swings)))
-                raw_values_for_scale.append(rate)
+            fields.append((pt, Hs))
+            vmax_pool.append(np.percentile(Hs, GLOBAL_VMAX_Q * 100.0))
 
-            else:  # ev
-                bip = sub[sub["PitchCall"] == "InPlay"].dropna(subset=["ExitSpeed"])
-                if bip.empty:
-                    images.append((pt, None, 0, 0))
-                    continue
-                H_sum, *_ = np.histogram2d(
-                    bip[xcol].values, bip[ycol].values,
-                    bins=[BINS, BINS], range=[xlim, ylim],
-                    weights=bip["ExitSpeed"].values
+        if not fields:
+            st.info("Nothing to plot.")
+            return
+
+        # Shared color normalization across every panel
+        shared_vmax = max(1e-9, np.max(vmax_pool))
+        norm = Normalize(vmin=0.0, vmax=shared_vmax)
+
+        # Layout
+        n_types = len(fields)
+        n_rows = int(np.ceil(n_types / N_COLS))
+        fig, axes = plt.subplots(
+            n_rows, N_COLS,
+            figsize=(PANEL_IN * N_COLS, PANEL_IN * n_rows),
+            constrained_layout=True
+        )
+        axes = np.atleast_1d(axes).ravel()
+
+        for ax in axes:
+            ax.axis("off")
+
+        # Draw each panel
+        for i, (pt, Hs) in enumerate(fields):
+            ax = axes[i]
+            ax.axis("on")
+
+            # image: center of bins for imshow extent
+            extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
+
+            im = ax.imshow(
+                Hs.T, origin="lower", extent=extent, cmap=CMAP, norm=norm,
+                interpolation="bilinear", aspect="equal"
+            )
+
+            # small glow for raw points (optional; comment out to remove)
+            sub = plot_data[plot_data["PitchType"] == pt]
+            ax.scatter(
+                sub["PlateLocSide"], sub["PlateLocHeight"],
+                s=6, c="white", alpha=0.3, linewidths=0
+            )
+
+            # strike zone
+            ax.add_patch(
+                patches.Rectangle(
+                    (z_x0, z_y0), zone_w, z_h,
+                    edgecolor="black", facecolor="none", linewidth=2
                 )
-                H_sum = H_sum.T.astype(np.float64)
-                H_cnt_bip = _build_grid(bip, xcol, ycol, xlim, ylim, BINS)
-                S_sum = _gaussian_blur_2d(_gaussian_blur_2d(H_sum, sig1), sig2)
-                S_cnt = _gaussian_blur_2d(_gaussian_blur_2d(H_cnt_bip, sig1), sig2)
-                with np.errstate(divide="ignore", invalid="ignore"):
-                    ev = np.where(S_cnt > 0, S_sum / S_cnt, np.nan)
-                images.append((pt, ev, len(bip), len(bip)))
-                raw_values_for_scale.append(ev)
+            )
 
-        # global scaling
-        if value_kind in ("pct", "rate"):
-            # clamp low noise, then scale all panels 0..1 using shared max
-            stacked = np.nan_to_num(np.stack([np.clip(im, 0, None) for _, im, _, _ in images if im is not None]))
-            floor = np.percentile(stacked, 60)
-            top   = np.percentile(stacked, 99)  # robust
-            def norm(im):
-                im = np.clip(im - floor, 0, None)
-                return np.clip((im / (top - floor + 1e-9)) ** GAMMA, 0, 1)
-            normalized = {pt: norm(im) if im is not None else None for pt, im, _, _ in images}
-            cbar_ticks = np.linspace(0, 1, 5)
-            cbar_labels = [f"{t*100:.0f}" for t in cbar_ticks]
-        else:
-            # EV: robust 10–90 pct across all panels, then 0..1 + gamma
-            vals = np.concatenate([np.ravel(im[np.isfinite(im)]) for _, im, _, _ in images if im is not None] or [np.array([0,1])])
-            vmin = np.percentile(vals, 10); vmax = np.percentile(vals, 90)
-            def norm(im):
-                z = (im - vmin) / (vmax - vmin + 1e-9)
-                return np.clip(z ** GAMMA, 0, 1)
-            normalized = {pt: norm(im) if im is not None else None for pt, im, _, _ in images}
-            cbar_ticks = None; cbar_labels = None
+            ax.set_xlim(x_min, x_max)
+            ax.set_ylim(y_min, y_max)
+            ax.set_xticks([]); ax.set_yticks([])
+            ax.set_title(f"{pt} — Frequency (n={len(sub)})", fontsize=11, pad=6)
 
-        # ----- layout (bigger panels) -----
-        npt = len(pitch_types)
-        per_row = 3
-        n_rows = int(np.ceil(npt / per_row))
-        W_PER = 7.0  # width (inches) per panel
-        H_PER = 7.0  # height per panel
-        fig, axes = plt.subplots(n_rows, per_row, figsize=(W_PER * per_row, H_PER * n_rows))
-        if npt == 1: axes = np.array([axes])
-        axes = axes.flatten()
+            # single colorbar per panel (thin)
+            cbar = fig.colorbar(im, ax=ax, fraction=0.036, pad=0.02)
+            cbar.ax.set_ylabel("% of pitches", rotation=90, labelpad=8)
+            cbar.ax.tick_params(labelsize=8)
 
-        # ----- render -----
-        for ax, (pt, _, n_disp, _) in zip(axes, images):
-            img = normalized.get(pt)
-            if img is None:
-                ax.set_axis_off()
-                continue
-            _axes_style(ax, xlim, ylim, title=f"{pt} — {map_type} (n={n_disp})")
-            im = ax.imshow(img, origin="lower",
-                           extent=[xlim[0], xlim[1], ylim[0], ylim[1]],
-                           cmap=cmap, interpolation="bilinear", aspect="equal")
-            _strike_zone(ax)
-            # per-panel colorbar (keeps things readable in Streamlit)
-            cbar = plt.colorbar(im, ax=ax, fraction=0.046, pad=0.02)
-            cbar.set_label(cbar_label, fontsize=10)
-            if cbar_ticks is not None:
-                cbar.set_ticks(cbar_ticks); cbar.set_ticklabels(cbar_labels)
+        # tidy empty slots
+        for j in range(i + 1, len(axes)):
+            axes[j].axis("off")
 
-        # clear any unused axes
-        for j in range(len(images), len(axes)):
-            axes[j].set_axis_off()
-
-        plt.suptitle(f"{pitcher_name} • {map_type} Heatmaps", fontsize=18, weight="bold")
-        plt.tight_layout(rect=[0, 0, 1, 0.94])
+        fig.suptitle(f"{pitcher_name} • Frequency Heatmaps", fontsize=16, y=0.995)
         st.pyplot(fig)
         plt.close(fig)
 
     except Exception as e:
-        st.error(f"Error generating {map_type} heatmaps: {e}")
-# ================= end TruMedia-style HEATMAPS v2 =================
+        st.error(f"Error generating Frequency heatmaps: {e}")
 
 
 def generate_pitch_traits_table():
