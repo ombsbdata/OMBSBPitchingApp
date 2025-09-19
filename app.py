@@ -1434,7 +1434,7 @@ def render_rolling_average_charts_tab():
 
 # === RENDER ===
 tab_flight, tab_biomech, tab_roll, tab_calc = st.tabs(
-    ["Pitch Flight Data", "Workload", "Rolling Average Charts", "Stuff+ Calculator"]
+    ["Pitch Flight Data", "Workload/30-Day", "Rolling Average Charts", "Stuff+ Calculator"]
 )
 
 
