@@ -1448,13 +1448,13 @@ with tab_flight:
     plot_release_and_approach_angles()
 
 with tab_biomech:
-    st.subheader("Bio Mech Data")
+    st.subheader("Workload")
 
     bio_df = load_biomech_data()
     if bio_df.empty:
-        st.info("No player-style biomech data available.")
+        st.info("No workload data available.")
     else:
-        # Link sidebar pitcher to biomech by canonical key
+        # Link sidebar pitcher to workload by canonical key
         sb_key = canon_key_last_first(pitcher_name)
         
         # Primary: exact PlayerKey match
@@ -1468,7 +1468,7 @@ with tab_biomech:
         
         if match_mask.any():
             player_choice = bio_df.loc[match_mask, "Player"].iloc[0]
-            st.caption(f"Linked to Bio-Mech data for: **{player_choice}**")
+            st.caption(f"Linked to Workload data for: **{player_choice}**")
         else:
             players_bio = sorted(bio_df["Player"].dropna().unique().tolist())
             # best-effort preselect
@@ -1476,17 +1476,16 @@ with tab_biomech:
                 pref_index = next(i for i, p in enumerate(players_bio) if canon_key_last_first(p) == sb_key)
             except StopIteration:
                 pref_index = 0
-            player_choice = st.selectbox("Choose Bio-Mech Player:", players_bio, index=pref_index)
-
+            player_choice = st.selectbox("Choose Player (Workload):", players_bio, index=pref_index)
 
         one_all = bio_df[bio_df["Player"] == player_choice].copy()
 
-        # ---- Date filter UI specific to Bio-Mech ----
+        # ---- Date filter UI specific to Workload ----
         dates_available = []
         if "DATE" in one_all.columns:
             dates_available = sorted(one_all["DATE"].dropna().dt.date.unique().tolist())
 
-        st.markdown("##### Date Filter (Bio-Mech)")
+        st.markdown("##### Date Filter (Workload)")
         dcol1, dcol2, dcol3 = st.columns([1.2, 1, 1.2])
         with dcol1:
             bio_date_mode = st.radio("Mode", ["All", "Single Date", "Date Range"], horizontal=True, key="bio_date_mode")
@@ -1504,15 +1503,12 @@ with tab_biomech:
                     default_start = dates_available[0]
                     default_end   = dates_available[-1]
                     date_start, date_end = st.date_input("Range", value=[default_start, default_end], min_value=default_start, max_value=default_end)
-                    # streamlit can return a single date if user clears one end—normalize
                     if isinstance(date_start, list) or isinstance(date_start, tuple):
-                        # safeguard, though streamlit usually returns tuple via value
                         date_start, date_end = date_start
                 else:
                     date_start, date_end = None, None
             else:
                 date_start, date_end = None, None
-
         # Apply date filter to a working copy
         one = one_all.copy()
         if "DATE" in one.columns:
