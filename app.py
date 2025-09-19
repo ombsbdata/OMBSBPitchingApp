@@ -1448,125 +1448,210 @@ with tab_flight:
     plot_release_and_approach_angles()
 
 with tab_biomech:
-    st.subheader("Workload")
+    st.subheader("Workload / 30-Day Pitch Counter")
 
-    bio_df = load_biomech_data()
-    if bio_df.empty:
-        st.info("No workload data available.")
+    df_src = season_df.copy()
+    if df_src.empty:
+        st.info("No data available.")
+        st.stop()
+
+    # Ensure Date typed
+    df_src = _ensure_date(df_src, "Date")
+
+    # -----------------------
+    # Controls
+    # -----------------------
+    teams = sorted(df_src["PitcherTeam"].dropna().unique().tolist()) if "PitcherTeam" in df_src.columns else []
+    default_team = TEAM_FILTER if TEAM_FILTER in teams else (teams[0] if teams else None)
+    c1, c2, c3 = st.columns([1.2, 1, 1])
+    with c1:
+        team_sel = st.selectbox("PitcherTeam", teams, index=(teams.index(default_team) if default_team in teams else 0)) if teams else None
+    with c2:
+        days_back = st.number_input("Days back", min_value=7, max_value=60, value=30, step=1)
+    with c3:
+        anchor_date = df_src["Date"].max().date() if "Date" in df_src.columns and not df_src["Date"].isna().all() else datetime.today().date()
+        st.caption(f"Latest date in data: **{anchor_date}**")
+
+    if team_sel is None:
+        st.info("No PitcherTeam found in data.")
+        st.stop()
+
+    # Window
+    from datetime import timedelta
+    end_date = anchor_date
+    start_date = end_date - timedelta(days=int(days_back) - 1)
+    date_index = pd.date_range(start=start_date, end=end_date, freq="D")
+
+    # Filter to team + window
+    mask = (df_src["PitcherTeam"] == team_sel) & (df_src["Date"].dt.date.between(start_date, end_date))
+    df = df_src.loc[mask].copy()
+
+    if df.empty:
+        st.info(f"No rows for {team_sel} between {start_date} and {end_date}.")
+        st.stop()
+
+    # -----------------------
+    # Build daily P and IP
+    # -----------------------
+    # Pitch count per day = number of rows (pitches)
+    grp_p = (df
+             .assign(DateOnly=df["Date"].dt.date)
+             .groupby(["Pitcher", "DateOnly"], dropna=False)
+             .size()
+             .rename("P")
+             .reset_index())
+
+    # Outs per day heuristic from user spec
+    # Each occurrence of KorBB == 'Strikeout' OR PlayResult in ['Out','Sacrifice'] counts as 1 out
+    has_korbb = "KorBB" in df.columns
+    has_playres = "PlayResult" in df.columns
+    if has_korbb or has_playres:
+        df["is_out"] = False
+        if has_korbb:
+            df.loc[df["KorBB"].astype(str).str.strip().str.lower() == "strikeout", "is_out"] = True
+        if has_playres:
+            df.loc[df["PlayResult"].astype(str).str.strip().isin(["Out", "Sacrifice"]), "is_out"] = True
+        grp_outs = (df.assign(DateOnly=df["Date"].dt.date)
+                      .groupby(["Pitcher", "DateOnly"], dropna=False)["is_out"]
+                      .sum()
+                      .rename("Outs")
+                      .reset_index())
     else:
-        # Link sidebar pitcher to workload by canonical key
-        sb_key = canon_key_last_first(pitcher_name)
-        
-        # Primary: exact PlayerKey match
-        match_mask = (bio_df.get("PlayerKey", pd.Series("", index=bio_df.index)) == sb_key)
-        
-        # Secondary: ignore all punctuation/spaces just in case
-        if not match_mask.any():
-            _tmp_key2 = bio_df["Player"].astype(str).str.replace(r"[^A-Za-z]", "", regex=True).str.lower()
-            sb_key2 = re.sub(r"[^A-Za-z]", "", str(pitcher_name)).lower()
-            match_mask = (_tmp_key2 == sb_key2)
-        
-        if match_mask.any():
-            player_choice = bio_df.loc[match_mask, "Player"].iloc[0]
-            st.caption(f"Linked to Workload data for: **{player_choice}**")
-        else:
-            players_bio = sorted(bio_df["Player"].dropna().unique().tolist())
-            # best-effort preselect
-            try:
-                pref_index = next(i for i, p in enumerate(players_bio) if canon_key_last_first(p) == sb_key)
-            except StopIteration:
-                pref_index = 0
-            player_choice = st.selectbox("Choose Player (Workload):", players_bio, index=pref_index)
+        grp_outs = pd.DataFrame(columns=["Pitcher", "DateOnly", "Outs"])
 
-        one_all = bio_df[bio_df["Player"] == player_choice].copy()
+    # Merge P + Outs -> IP
+    daily = pd.merge(grp_p, grp_outs, on=["Pitcher", "DateOnly"], how="left")
+    daily["Outs"] = pd.to_numeric(daily["Outs"], errors="coerce").fillna(0).astype(int)
 
-        # ---- Date filter UI specific to Workload ----
-        dates_available = []
-        if "DATE" in one_all.columns:
-            dates_available = sorted(one_all["DATE"].dropna().dt.date.unique().tolist())
+    def outs_to_ip_str(outs: int) -> str:
+        # 3 outs = 1.0; remainder 1->.1, 2->.2
+        innings = outs // 3
+        rem = outs % 3
+        return f"{innings}.{rem}"
 
-        st.markdown("##### Date Filter (Workload)")
-        dcol1, dcol2, dcol3 = st.columns([1.2, 1, 1.2])
-        with dcol1:
-            bio_date_mode = st.radio("Mode", ["All", "Single Date", "Date Range"], horizontal=True, key="bio_date_mode")
-        with dcol2:
-            if bio_date_mode == "Single Date":
-                if dates_available:
-                    single_date = st.selectbox("Date", options=dates_available, index=len(dates_available)-1)
-                else:
-                    single_date = None
-            else:
-                single_date = None
-        with dcol3:
-            if bio_date_mode == "Date Range":
-                if dates_available:
-                    default_start = dates_available[0]
-                    default_end   = dates_available[-1]
-                    date_start, date_end = st.date_input("Range", value=[default_start, default_end], min_value=default_start, max_value=default_end)
-                    if isinstance(date_start, list) or isinstance(date_start, tuple):
-                        date_start, date_end = date_start
-                else:
-                    date_start, date_end = None, None
-            else:
-                date_start, date_end = None, None
-        # Apply date filter to a working copy
-        one = one_all.copy()
-        if "DATE" in one.columns:
-            if bio_date_mode == "Single Date" and single_date:
-                one = one[one["DATE"].dt.date == pd.to_datetime(single_date).date()]
-            elif bio_date_mode == "Date Range" and date_start and date_end:
-                sdt = pd.to_datetime(date_start)
-                edt = pd.to_datetime(date_end)
-                one = one[(one["DATE"] >= sdt) & (one["DATE"] <= edt)]
+    daily["IP"] = daily["Outs"].apply(outs_to_ip_str)
 
-        # ---- Summary (averages across selected dates) ----
-        st.markdown("#### Summary (Averages over selected dates)")
-        summary_df = _biomech_summary(one)
-        if summary_df.empty:
-            st.info("No biomech rows in the selected window.")
-        else:
-            st.dataframe(summary_df, use_container_width=True)
+    # Ensure all pitchers in team window appear even if no pitches on some days
+    pitchers = sorted(df["Pitcher"].dropna().unique().tolist())
+    # Create full grid for dates * pitchers
+    idx = pd.MultiIndex.from_product([pitchers, date_index.date], names=["Pitcher", "DateOnly"])
+    base = pd.DataFrame(index=idx).reset_index()
+    daily = base.merge(daily, on=["Pitcher", "DateOnly"], how="left")
+    daily["P"] = daily["P"].fillna(0).astype(int)
+    daily["IP"] = daily["IP"].fillna("").astype(str)
 
-        # Show available dates for convenience
-        if dates_available:
-            st.caption("Available dates: " + ", ".join(pd.Series(dates_available).astype(str).tolist()))
+    # Totals for sorting (last N days)
+    totals = (daily.groupby("Pitcher", as_index=False)
+                    .agg(TotalP=("P", "sum"),
+                         TotalOuts=("DateOnly", lambda s: 0)) )  # placeholder, we’ll recompute
+    # Recompute total outs then IP
+    tot_outs = (df.assign(DateOnly=df["Date"].dt.date)
+                  .groupby("Pitcher")["is_out"].sum().rename("TotalOuts")).reindex(pitchers).fillna(0).astype(int)
+    totals["TotalOuts"] = totals["Pitcher"].map(tot_outs).fillna(0).astype(int)
+    totals["TotalIP"] = totals["TotalOuts"].apply(outs_to_ip_str)
 
-        # ---- Detailed per-date tables (Fresh / Post) ----
-        base_cols = [c for c in ["DATE","PREP_TIME","TOP_VELO","lbs"] if c in one.columns]
-        fresh_cols = [c for c in one.columns if c.startswith("Fresh_")]
-        post_cols  = [c for c in one.columns if c.startswith("Post_")]
+    # -----------------------
+    # Build HTML table with merged month cells
+    # -----------------------
+    # Determine month spans
+    from collections import OrderedDict
+    month_spans = OrderedDict()
+    for d in date_index:
+        key = d.strftime("%B %Y")
+        month_spans.setdefault(key, 0)
+        month_spans[key] += 1
 
-        def _fmt(df):
-            out = df.copy()
-            for c in out.columns:
-                if pd.api.types.is_numeric_dtype(out[c]):
-                    out[c] = out[c].round(2)
-            return out
+    # Weekday abbreviations
+    def dow(d): return d.strftime("%a")  # Mon/Tue/...
 
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown("**Fresh — per event**")
-            fresh = one[base_cols + fresh_cols] if fresh_cols else pd.DataFrame()
-            st.dataframe(_fmt(fresh), use_container_width=True) if not fresh.empty else st.write("—")
+    # Build header HTML
+    # 1) Top-left corner headers (Pitcher + optional Totals), then month merged cells
+    # 2) Second header row: each date cell spans 2 columns (P, IP) with day below
+    # 3) Third header row: 'P' and 'IP' under each date
+    left_fixed_cols = ["Pitcher", "Total P", "Total IP"]
+    total_date_cols = len(date_index) * 2
 
-        with c2:
-            st.markdown("**Post — per event**")
-            post = one[base_cols + post_cols] if post_cols else pd.DataFrame()
-            st.dataframe(_fmt(post), use_container_width=True) if not post.empty else st.write("—")
+    # CSS (sticky header + zebra + highlight)
+    highlight_name = pitcher_name or ""
+    styles = """
+    <style>
+      table.workload { border-collapse: collapse; width: 100%; table-layout: fixed; }
+      table.workload th, table.workload td { border: 1px solid #ddd; padding: 4px 6px; text-align: center; font-size: 12px; }
+      table.workload thead th { position: sticky; top: 0; background: #f6f8fa; z-index: 2; }
+      table.workload thead tr:nth-child(2) th { top: 24px; } /* second header row stick above data */
+      table.workload thead tr:nth-child(3) th { top: 48px; }
+      table.workload tbody tr:nth-child(even) { background: #fafafa; }
+      table.workload .name { text-align: left; white-space: nowrap; }
+      table.workload .hl { background: #fff7cc !important; font-weight: 700; }
+      .scroll-x { overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
+      .sticky-left { position: sticky; left: 0; background: #fff; z-index: 3; }
+      .sticky-left-2 { position: sticky; left: 140px; background: #fff; z-index: 3; }
+      .sticky-left-3 { position: sticky; left: 220px; background: #fff; z-index: 3; }
+      /* adjust these left positions if name column width changes */
+    </style>
+    """
 
-        # ---- Optional: date-aligned Post − Fresh deltas table ----
-        have_f = set([f"Fresh_{m}" for m in ["RSI","PP","ECC_PP","JH"]]).issubset(one.columns)
-        have_p = set([f"Post_{m}" for m in ["RSI","PP","ECC_PP","JH"]]).issubset(one.columns)
-        if "DATE" in one.columns and have_f and have_p:
-            f = one[["DATE","Fresh_RSI","Fresh_PP","Fresh_ECC_PP","Fresh_JH"]]
-            p = one[["DATE","Post_RSI","Post_PP","Post_ECC_PP","Post_JH"]]
-            joined = f.merge(p, on="DATE", how="inner")
-            for m in ["RSI","PP","ECC_PP","JH"]:
-                joined[f"Δ_{m}"] = joined[f"Post_{m}"] - joined[f"Fresh_{m}"]
-            show = joined[["DATE","Δ_RSI","Δ_PP","Δ_ECC_PP","Δ_JH"]]
-            if not show.empty:
-                st.markdown("**Per-Date Deltas (Post − Fresh)**")
-                st.dataframe(_fmt(show), use_container_width=True)
+    # Compute column widths (tweak to taste)
+    name_col_width = 140
+    total_cols_width = 80  # each
+    day_cell_width = 48    # P and IP are narrow
+
+    # Header rows
+    h1 = f"<tr><th class='sticky-left' style='min-width:{name_col_width}px' rowspan='3'>Pitcher</th>" \
+         f"<th class='sticky-left-2' style='min-width:{total_cols_width}px' rowspan='3'>Total P</th>" \
+         f"<th class='sticky-left-3' style='min-width:{total_cols_width}px' rowspan='3'>Total IP</th>"
+    for mon, span in month_spans.items():
+        h1 += f"<th colspan='{span*2}'>{mon}</th>"
+    h1 += "</tr>"
+
+    # Row 2: date number + DOW (each date cell spans 2 columns)
+    h2 = "<tr>"
+    for d in date_index:
+        h2 += f"<th colspan='2'>{d.day}<br>{dow(d)}</th>"
+    h2 += "</tr>"
+
+    # Row 3: P / IP under each date
+    h3 = "<tr>"
+    for _ in date_index:
+        h3 += "<th>P</th><th>IP</th>"
+    h3 += "</tr>"
+
+    # Sort pitchers by Total P desc (last N days)
+    totals_sorted = totals.sort_values(["TotalP", "Pitcher"], ascending=[False, True])
+
+    # Map for quick lookups
+    # (Pitcher, date) -> (P, IP)
+    key_to_vals = {(r["Pitcher"], r["DateOnly"]): (int(r["P"]), r["IP"]) for _, r in daily.iterrows()}
+    name_safe = (highlight_name or "").strip().lower()
+
+    # Build rows
+    body_rows = []
+    for _, row in totals_sorted.iterrows():
+        p_name = row["Pitcher"]
+        row_class = "hl" if p_name and p_name.strip().lower() == name_safe else ""
+        tr = f"<tr class='{row_class}'>"
+        tr += f"<td class='name sticky-left' style='min-width:{name_col_width}px'>{p_name}</td>"
+        tr += f"<td class='sticky-left-2' style='min-width:{total_cols_width}px'>{int(row['TotalP'])}</td>"
+        tr += f"<td class='sticky-left-3' style='min-width:{total_cols_width}px'>{row['TotalIP']}</td>"
+
+        for d in date_index.date:
+            P, IP = key_to_vals.get((p_name, d), (0, ""))
+            tr += f"<td style='min-width:{day_cell_width}px'>{P if P>0 else ''}</td>"
+            tr += f"<td style='min-width:{day_cell_width}px'>{IP}</td>"
+        tr += "</tr>"
+        body_rows.append(tr)
+
+    table_html = styles + "<div class='scroll-x'><table class='workload'>"
+    table_html += f"<thead>{h1}{h2}{h3}</thead><tbody>{''.join(body_rows)}</tbody></table></div>"
+
+    st.markdown(table_html, unsafe_allow_html=True)
+
+    # Small legend / notes
+    st.caption(
+        "IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
+        "IP shown as baseball decimals (e.g., 1.2 = 5 outs)."
+    )
+
 
 
 
