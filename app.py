@@ -569,23 +569,36 @@ def plot_heatmaps(map_type: str):
             return
 
         # helper: 2D gaussian blur with numpy (no scipy dependency)
-        def gaussian_blur(img, sigma=2.5):
-            # make 1D kernel then separable conv
-            radius = int(max(1, round(3*sigma)))
-            x = np.arange(-radius, radius+1, dtype=float)
-            k = np.exp(-(x**2)/(2*sigma**2))
+        def _conv1d_reflect(img: np.ndarray, k: np.ndarray, axis: int) -> np.ndarray:
+            """Convolve img with 1D kernel k along given axis using reflect padding."""
+            pad = len(k) // 2
+            # build pad widths per axis
+            pad_widths = [(0, 0)] * img.ndim
+            pad_widths[axis] = (pad, pad)
+            apad = np.pad(img, pad_widths, mode="reflect")
+        
+            # move axis to 0 for easy iteration over remaining dims
+            apad = np.moveaxis(apad, axis, 0)
+            out = np.empty_like(apad[pad:-pad])  # ‘valid’ slice size
+        
+            # iterate over all columns in the remaining dims
+            it = np.ndindex(apad.shape[1], apad.shape[2])
+            for j, i in it:
+                out[:, j, i] = np.convolve(apad[:, j, i], k, mode="valid")
+        
+            # move axis back
+            return np.moveaxis(out, 0, axis)
+        
+        def gaussian_blur(img: np.ndarray, sigma: float = 2.5) -> np.ndarray:
+            """Separable Gaussian blur using 1D convolution (no scipy)."""
+            radius = int(max(1, round(3 * sigma)))
+            x = np.arange(-radius, radius + 1, dtype=float)
+            k = np.exp(-(x**2) / (2 * sigma * sigma))
             k /= k.sum()
-            # pad reflect to avoid edge fade
-            from numpy.lib.stride_tricks import sliding_window_view as swv
-            def conv1d(a, k, axis):
-                a_pad = np.pad(a, [(radius, radius)]*a.ndim, mode="reflect")
-                a_pad = np.moveaxis(a_pad, axis, 0)
-                win = swv(a_pad, k.size, axis=0)
-                out = (win * k.reshape(-1,1,1)).sum(axis=0)
-                return np.moveaxis(out, 0, axis)
-            tmp = conv1d(img, k, axis=0)
-            out = conv1d(tmp, k, axis=1)
+            tmp = _conv1d_reflect(img, k, axis=0)
+            out = _conv1d_reflect(tmp, k, axis=1)
             return out
+
 
         # compute per-PT matrix + keep global vmax for shared color scale
         mats = {}
