@@ -1455,7 +1455,6 @@ with tab_biomech:
         st.info("No data available.")
         st.stop()
 
-    # Ensure Date typed
     df_src = _ensure_date(df_src, "Date")
 
     # -----------------------
@@ -1464,28 +1463,24 @@ with tab_biomech:
     teams = sorted(df_src["PitcherTeam"].dropna().unique().tolist()) if "PitcherTeam" in df_src.columns else []
     default_team = TEAM_FILTER if TEAM_FILTER in teams else (teams[0] if teams else None)
 
+    from datetime import timedelta
     c0, c1, c2, c3, c4 = st.columns([1.2, 0.9, 0.55, 0.55, 1.2])
     with c0:
         team_sel = st.selectbox("PitcherTeam", teams, index=(teams.index(default_team) if default_team in teams else 0)) if teams else None
     with c1:
         days_back = st.number_input("Window (days)", min_value=7, max_value=180, value=30, step=1)
 
-    # window navigation (month-ish paging)
-    from datetime import timedelta, date
-    # seed end date into session state from data max
+    # window navigation
     data_max = df_src["Date"].max().date() if "Date" in df_src.columns and not df_src["Date"].isna().all() else datetime.today().date()
     if "wl_end_date" not in st.session_state:
         st.session_state.wl_end_date = data_max
-
     with c2:
         prev_btn = st.button("◀ Prev")
     with c3:
         next_btn = st.button("Next ▶")
     with c4:
-        # direct override if you want to jump somewhere
         picked_end = st.date_input("End date", value=st.session_state.wl_end_date)
         st.session_state.wl_end_date = picked_end
-
     if prev_btn:
         st.session_state.wl_end_date = st.session_state.wl_end_date - timedelta(days=int(days_back))
     if next_btn:
@@ -1501,20 +1496,16 @@ with tab_biomech:
 
     mask = (df_src["PitcherTeam"] == team_sel) & (df_src["Date"].dt.date.between(start_date, end_date))
     df = df_src.loc[mask].copy()
-
     if df.empty:
         st.info(f"No rows for {team_sel} between {start_date} and {end_date}.")
         st.stop()
 
     # -----------------------
-    # Build daily P and IP
+    # Daily P and IP
     # -----------------------
-    grp_p = (df
-             .assign(DateOnly=df["Date"].dt.date)
-             .groupby(["Pitcher", "DateOnly"], dropna=False)
-             .size()
-             .rename("P")
-             .reset_index())
+    grp_p = (df.assign(DateOnly=df["Date"].dt.date)
+               .groupby(["Pitcher", "DateOnly"], dropna=False)
+               .size().rename("P").reset_index())
 
     has_korbb = "KorBB" in df.columns
     has_playres = "PlayResult" in df.columns
@@ -1526,9 +1517,7 @@ with tab_biomech:
             df.loc[df["PlayResult"].astype(str).str.strip().isin(["Out", "Sacrifice"]), "is_out"] = True
         grp_outs = (df.assign(DateOnly=df["Date"].dt.date)
                       .groupby(["Pitcher", "DateOnly"], dropna=False)["is_out"]
-                      .sum()
-                      .rename("Outs")
-                      .reset_index())
+                      .sum().rename("Outs").reset_index())
     else:
         grp_outs = pd.DataFrame(columns=["Pitcher", "DateOnly", "Outs"])
 
@@ -1544,41 +1533,61 @@ with tab_biomech:
 
     pitchers = sorted(df["Pitcher"].dropna().unique().tolist())
 
-    # Complete grid for all days
+    # complete grid pitcher × date
     idx = pd.MultiIndex.from_product([pitchers, date_index.date], names=["Pitcher", "DateOnly"])
     base = pd.DataFrame(index=idx).reset_index()
     daily = base.merge(daily, on=["Pitcher", "DateOnly"], how="left")
     daily["P"] = daily["P"].fillna(0).astype(int)
+    daily["Outs"] = daily["Outs"].fillna(0).astype(int)
     daily["IP"] = daily["IP"].fillna("").astype(str)
 
-    # Totals within window
+    # Totals for window
     tot_p = daily.groupby("Pitcher")["P"].sum()
-    # recompute total outs within window
-    outs_by_pitcher = (df.assign(DateOnly=df["Date"].dt.date)
-                         .groupby("Pitcher")["is_out"].sum()
-                         .reindex(pitchers).fillna(0).astype(int))
-    totals = pd.DataFrame({
-        "Pitcher": pitchers,
-        "TotalP": tot_p.reindex(pitchers).fillna(0).astype(int).values,
-        "TotalIP": outs_by_pitcher.apply(outs_to_ip_str).values
-    })
+    tot_outs = daily.groupby("Pitcher")["Outs"].sum()
+    totals = pd.DataFrame({"Pitcher": pitchers,
+                           "TotalP": tot_p.reindex(pitchers).fillna(0).astype(int).values,
+                           "TotalIP": tot_outs.apply(outs_to_ip_str).reindex(pitchers).fillna("0.0").values})
 
     # -----------------------
-    # Render HTML table (fixed cell widths + horizontal scroll)
+    # EOW (End of Week) after each Sunday
+    # -----------------------
+    sundays = [d.date() for d in date_index if d.weekday() == 6]  # 6 = Sunday
+
+    # precompute EOW P/IP for each (pitcher, sunday)
+    eow_vals = {}
+    for p in pitchers:
+        p_rows = daily[daily["Pitcher"] == p]
+        for s in sundays:
+            week_start = max(start_date, s - timedelta(days=6))
+            mask_week = (p_rows["DateOnly"] >= week_start) & (p_rows["DateOnly"] <= s)
+            p_sum = int(p_rows.loc[mask_week, "P"].sum())
+            outs_sum = int(p_rows.loc[mask_week, "Outs"].sum())
+            eow_vals[(p, s)] = (p_sum, outs_sum)
+
+    # Build column sequence: [(kind, date)] where kind in {"day", "eow"}
+    col_seq = []
+    for d in date_index:
+        col_seq.append(("day", d.date()))
+        if d.weekday() == 6:  # add EOW after Sunday
+            col_seq.append(("eow", d.date()))
+
+    # -----------------------
+    # Render HTML table
     # -----------------------
     from collections import OrderedDict
+    # month spans need to include both day and eow columns
     month_spans = OrderedDict()
-    for d in date_index:
-        key = d.strftime("%B %Y")
+    for kind, d in col_seq:
+        key = pd.Timestamp(d).strftime("%B %Y")
         month_spans.setdefault(key, 0)
-        month_spans[key] += 1
+        month_spans[key] += 2  # each entry contributes 2 columns (P, IP)
 
-    def dow(d): return d.strftime("%a")
+    def dow(d): return pd.Timestamp(d).strftime("%a")
 
-    # ===== Appearance =====
+    # ===== Appearance (tweak here) =====
     name_col_width = 180
-    tot_col_width  = 96   # each of the two totals columns
-    day_cell_w     = 44   # fixed width for each P/IP cell
+    tot_col_width  = 96
+    day_cell_w     = 32    # << narrower P/IP cells
     row_h          = 28
 
     highlight_name = (pitcher_name or "").strip().lower()
@@ -1588,7 +1597,7 @@ with tab_biomech:
       .scroll-x {{ overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 10px; }}
       table.workload {{ border-collapse: collapse; width: max-content; table-layout: fixed; }}
       table.workload th, table.workload td {{
-        border: 1px solid #e6e6e6; padding: 4px 6px; text-align: center; font-size: 12px; height: {row_h}px;
+        border: 1px solid #e6e6e6; padding: 3px 4px; text-align: center; font-size: 12px; height: {row_h}px;
         white-space: nowrap;
       }}
       table.workload thead th {{ position: sticky; top: 0; background: #f8fafc; z-index: 2; }}
@@ -1600,19 +1609,24 @@ with tab_biomech:
       .sticky-left-2 {{ position: sticky; left: {name_col_width}px; background: #fff; z-index: 3; }}
       .sticky-left-3 {{ position: sticky; left: {name_col_width + tot_col_width}px; background: #fff; z-index: 3; }}
 
-      /* emphasize totals */
+      /* totals styling */
       thead .tot-head {{ background: #eef6ff; font-weight: 700; }}
       tbody td.tot    {{ background: #f5faff; font-weight: 700; }}
 
+      /* EOW styling */
+      thead .eow-head {{ background: #fff0e6; }}
+      tbody td.eow    {{ background: #fff7f0; font-weight: 600; }}
+
       tbody tr:nth-child(even) {{ background: #fcfcfc; }}
       tbody tr.hl {{ background: #fff7cc !important; font-weight: 700; }}
+
       .name {{ min-width: {name_col_width}px; }}
       .totcol {{ min-width: {tot_col_width}px; }}
       .daycol {{ width: {day_cell_w}px; min-width: {day_cell_w}px; max-width: {day_cell_w}px; }}
     </style>
     """
 
-    # header rows
+    # Header rows
     h1 = (
         f"<tr>"
         f"<th class='sticky-left' rowspan='3'>Pitcher</th>"
@@ -1620,47 +1634,61 @@ with tab_biomech:
         f"<th class='sticky-left-3 tot-head' rowspan='3' title='Total innings pitched in window'>Total IP ({int(days_back)}d)</th>"
     )
     for mon, span in month_spans.items():
-        h1 += f"<th colspan='{span*2}'>{mon}</th>"
+        h1 += f"<th colspan='{span}'>{mon}</th>"
     h1 += "</tr>"
 
     h2 = "<tr>"
-    for d in date_index:
-        h2 += f"<th colspan='2'>{d.day}<br>{dow(d)}</th>"
+    for kind, d in col_seq:
+        if kind == "day":
+            h2 += f"<th colspan='2'>{pd.Timestamp(d).day}<br>{dow(d)}</th>"
+        else:
+            # End of Week label (after Sun)
+            h2 += f"<th class='eow-head' colspan='2' title='Totals Mon–Sun ending {d}'>EOW<br>{pd.Timestamp(d).strftime('%b %d')}</th>"
     h2 += "</tr>"
 
     h3 = "<tr>"
-    for _ in date_index:
-        h3 += "<th>P</th><th>IP</th>"
+    for kind, _ in col_seq:
+        if kind == "day":
+            h3 += "<th>P</th><th>IP</th>"
+        else:
+            h3 += "<th class='eow-head'>P</th><th class='eow-head'>IP</th>"
     h3 += "</tr>"
 
-    # mapping for quick lookup
-    key_to_vals = {(r["Pitcher"], r["DateOnly"]): (int(r["P"]), r["IP"]) for _, r in daily.iterrows()}
+    # mapping for quick daily lookups
+    daily_key = {(r["Pitcher"], r["DateOnly"]): (int(r["P"]), r["IP"]) for _, r in daily.iterrows()}
 
-    # order by total P desc
+    # order rows by TotalP desc
     totals_sorted = totals.sort_values(["TotalP", "Pitcher"], ascending=[False, True])
 
+    # Body rows
     body_rows = []
-    for _, r in totals_sorted.iterrows():
-        p_name = r["Pitcher"]
+    for _, rr in totals_sorted.iterrows():
+        p_name = rr["Pitcher"]
         rowcls = "hl" if p_name and p_name.strip().lower() == highlight_name else ""
         tr = f"<tr class='{rowcls}'>"
         tr += f"<td class='name sticky-left'>{p_name}</td>"
-        tr += f"<td class='tot sticky-left-2 totcol'>{int(r['TotalP'])}</td>"
-        tr += f"<td class='tot sticky-left-3 totcol'>{r['TotalIP']}</td>"
-        for d in date_index.date:
-            P, IP = key_to_vals.get((p_name, d), (0, ""))
-            # put P only if >0 to keep the view clean
-            tr += f"<td class='daycol'>{P if P>0 else ''}</td>"
-            tr += f"<td class='daycol'>{IP}</td>"
+        tr += f"<td class='tot sticky-left-2 totcol'>{int(rr['TotalP'])}</td>"
+        tr += f"<td class='tot sticky-left-3 totcol'>{rr['TotalIP']}</td>"
+
+        for kind, d in col_seq:
+            if kind == "day":
+                P, IP = daily_key.get((p_name, d), (0, ""))
+                tr += f"<td class='daycol'>{P if P>0 else ''}</td>"
+                tr += f"<td class='daycol'>{IP}</td>"
+            else:
+                P_week, Outs_week = eow_vals.get((p_name, d), (0, 0))
+                tr += f"<td class='daycol eow'>{P_week if P_week>0 else ''}</td>"
+                tr += f"<td class='daycol eow'>{outs_to_ip_str(Outs_week) if Outs_week>0 else ''}</td>"
         tr += "</tr>"
         body_rows.append(tr)
 
     table_html = styles + "<div class='scroll-x'><table class='workload'>"
     table_html += f"<thead>{h1}{h2}{h3}</thead><tbody>{''.join(body_rows)}</tbody></table></div>"
-
     st.markdown(table_html, unsafe_allow_html=True)
+
     st.caption(
-        "Totals reflect the selected window. IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
+        "Totals reflect the selected window. EOW = totals Mon–Sun ending on Sunday columns. "
+        "IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
         "IP shown in baseball decimals (e.g., 1.2 = 5 outs)."
     )
 
