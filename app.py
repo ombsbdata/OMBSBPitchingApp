@@ -1448,7 +1448,7 @@ with tab_flight:
     plot_release_and_approach_angles()
 
 with tab_biomech:
-    st.subheader("Workload / 30-Day Pitch Counter")
+    st.subheader("Workload / Pitch Counter")
 
     df_src = season_df.copy()
     if df_src.empty:
@@ -1463,26 +1463,42 @@ with tab_biomech:
     # -----------------------
     teams = sorted(df_src["PitcherTeam"].dropna().unique().tolist()) if "PitcherTeam" in df_src.columns else []
     default_team = TEAM_FILTER if TEAM_FILTER in teams else (teams[0] if teams else None)
-    c1, c2, c3 = st.columns([1.2, 1, 1])
-    with c1:
+
+    c0, c1, c2, c3, c4 = st.columns([1.2, 0.9, 0.55, 0.55, 1.2])
+    with c0:
         team_sel = st.selectbox("PitcherTeam", teams, index=(teams.index(default_team) if default_team in teams else 0)) if teams else None
+    with c1:
+        days_back = st.number_input("Window (days)", min_value=7, max_value=180, value=30, step=1)
+
+    # window navigation (month-ish paging)
+    from datetime import timedelta, date
+    # seed end date into session state from data max
+    data_max = df_src["Date"].max().date() if "Date" in df_src.columns and not df_src["Date"].isna().all() else datetime.today().date()
+    if "wl_end_date" not in st.session_state:
+        st.session_state.wl_end_date = data_max
+
     with c2:
-        days_back = st.number_input("Days back", min_value=7, max_value=60, value=30, step=1)
+        prev_btn = st.button("◀ Prev")
     with c3:
-        anchor_date = df_src["Date"].max().date() if "Date" in df_src.columns and not df_src["Date"].isna().all() else datetime.today().date()
-        st.caption(f"Latest date in data: **{anchor_date}**")
+        next_btn = st.button("Next ▶")
+    with c4:
+        # direct override if you want to jump somewhere
+        picked_end = st.date_input("End date", value=st.session_state.wl_end_date)
+        st.session_state.wl_end_date = picked_end
+
+    if prev_btn:
+        st.session_state.wl_end_date = st.session_state.wl_end_date - timedelta(days=int(days_back))
+    if next_btn:
+        st.session_state.wl_end_date = st.session_state.wl_end_date + timedelta(days=int(days_back))
 
     if team_sel is None:
         st.info("No PitcherTeam found in data.")
         st.stop()
 
-    # Window
-    from datetime import timedelta
-    end_date = anchor_date
+    end_date = st.session_state.wl_end_date
     start_date = end_date - timedelta(days=int(days_back) - 1)
     date_index = pd.date_range(start=start_date, end=end_date, freq="D")
 
-    # Filter to team + window
     mask = (df_src["PitcherTeam"] == team_sel) & (df_src["Date"].dt.date.between(start_date, end_date))
     df = df_src.loc[mask].copy()
 
@@ -1493,7 +1509,6 @@ with tab_biomech:
     # -----------------------
     # Build daily P and IP
     # -----------------------
-    # Pitch count per day = number of rows (pitches)
     grp_p = (df
              .assign(DateOnly=df["Date"].dt.date)
              .groupby(["Pitcher", "DateOnly"], dropna=False)
@@ -1501,8 +1516,6 @@ with tab_biomech:
              .rename("P")
              .reset_index())
 
-    # Outs per day heuristic from user spec
-    # Each occurrence of KorBB == 'Strikeout' OR PlayResult in ['Out','Sacrifice'] counts as 1 out
     has_korbb = "KorBB" in df.columns
     has_playres = "PlayResult" in df.columns
     if has_korbb or has_playres:
@@ -1519,41 +1532,40 @@ with tab_biomech:
     else:
         grp_outs = pd.DataFrame(columns=["Pitcher", "DateOnly", "Outs"])
 
-    # Merge P + Outs -> IP
     daily = pd.merge(grp_p, grp_outs, on=["Pitcher", "DateOnly"], how="left")
     daily["Outs"] = pd.to_numeric(daily["Outs"], errors="coerce").fillna(0).astype(int)
 
     def outs_to_ip_str(outs: int) -> str:
-        # 3 outs = 1.0; remainder 1->.1, 2->.2
         innings = outs // 3
         rem = outs % 3
         return f"{innings}.{rem}"
 
     daily["IP"] = daily["Outs"].apply(outs_to_ip_str)
 
-    # Ensure all pitchers in team window appear even if no pitches on some days
     pitchers = sorted(df["Pitcher"].dropna().unique().tolist())
-    # Create full grid for dates * pitchers
+
+    # Complete grid for all days
     idx = pd.MultiIndex.from_product([pitchers, date_index.date], names=["Pitcher", "DateOnly"])
     base = pd.DataFrame(index=idx).reset_index()
     daily = base.merge(daily, on=["Pitcher", "DateOnly"], how="left")
     daily["P"] = daily["P"].fillna(0).astype(int)
     daily["IP"] = daily["IP"].fillna("").astype(str)
 
-    # Totals for sorting (last N days)
-    totals = (daily.groupby("Pitcher", as_index=False)
-                    .agg(TotalP=("P", "sum"),
-                         TotalOuts=("DateOnly", lambda s: 0)) )  # placeholder, we’ll recompute
-    # Recompute total outs then IP
-    tot_outs = (df.assign(DateOnly=df["Date"].dt.date)
-                  .groupby("Pitcher")["is_out"].sum().rename("TotalOuts")).reindex(pitchers).fillna(0).astype(int)
-    totals["TotalOuts"] = totals["Pitcher"].map(tot_outs).fillna(0).astype(int)
-    totals["TotalIP"] = totals["TotalOuts"].apply(outs_to_ip_str)
+    # Totals within window
+    tot_p = daily.groupby("Pitcher")["P"].sum()
+    # recompute total outs within window
+    outs_by_pitcher = (df.assign(DateOnly=df["Date"].dt.date)
+                         .groupby("Pitcher")["is_out"].sum()
+                         .reindex(pitchers).fillna(0).astype(int))
+    totals = pd.DataFrame({
+        "Pitcher": pitchers,
+        "TotalP": tot_p.reindex(pitchers).fillna(0).astype(int).values,
+        "TotalIP": outs_by_pitcher.apply(outs_to_ip_str).values
+    })
 
     # -----------------------
-    # Build HTML table with merged month cells
+    # Render HTML table (fixed cell widths + horizontal scroll)
     # -----------------------
-    # Determine month spans
     from collections import OrderedDict
     month_spans = OrderedDict()
     for d in date_index:
@@ -1561,83 +1573,85 @@ with tab_biomech:
         month_spans.setdefault(key, 0)
         month_spans[key] += 1
 
-    # Weekday abbreviations
-    def dow(d): return d.strftime("%a")  # Mon/Tue/...
+    def dow(d): return d.strftime("%a")
 
-    # Build header HTML
-    # 1) Top-left corner headers (Pitcher + optional Totals), then month merged cells
-    # 2) Second header row: each date cell spans 2 columns (P, IP) with day below
-    # 3) Third header row: 'P' and 'IP' under each date
-    left_fixed_cols = ["Pitcher", "Total P", "Total IP"]
-    total_date_cols = len(date_index) * 2
+    # ===== Appearance =====
+    name_col_width = 180
+    tot_col_width  = 96   # each of the two totals columns
+    day_cell_w     = 44   # fixed width for each P/IP cell
+    row_h          = 28
 
-    # CSS (sticky header + zebra + highlight)
-    highlight_name = pitcher_name or ""
-    styles = """
+    highlight_name = (pitcher_name or "").strip().lower()
+
+    styles = f"""
     <style>
-      table.workload { border-collapse: collapse; width: 100%; table-layout: fixed; }
-      table.workload th, table.workload td { border: 1px solid #ddd; padding: 4px 6px; text-align: center; font-size: 12px; }
-      table.workload thead th { position: sticky; top: 0; background: #f6f8fa; z-index: 2; }
-      table.workload thead tr:nth-child(2) th { top: 24px; } /* second header row stick above data */
-      table.workload thead tr:nth-child(3) th { top: 48px; }
-      table.workload tbody tr:nth-child(even) { background: #fafafa; }
-      table.workload .name { text-align: left; white-space: nowrap; }
-      table.workload .hl { background: #fff7cc !important; font-weight: 700; }
-      .scroll-x { overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 8px; }
-      .sticky-left { position: sticky; left: 0; background: #fff; z-index: 3; }
-      .sticky-left-2 { position: sticky; left: 140px; background: #fff; z-index: 3; }
-      .sticky-left-3 { position: sticky; left: 220px; background: #fff; z-index: 3; }
-      /* adjust these left positions if name column width changes */
+      .scroll-x {{ overflow-x: auto; border: 1px solid #e5e7eb; border-radius: 10px; }}
+      table.workload {{ border-collapse: collapse; width: max-content; table-layout: fixed; }}
+      table.workload th, table.workload td {{
+        border: 1px solid #e6e6e6; padding: 4px 6px; text-align: center; font-size: 12px; height: {row_h}px;
+        white-space: nowrap;
+      }}
+      table.workload thead th {{ position: sticky; top: 0; background: #f8fafc; z-index: 2; }}
+      table.workload thead tr:nth-child(2) th {{ top: 26px; }}
+      table.workload thead tr:nth-child(3) th {{ top: 52px; }}
+
+      /* sticky left columns */
+      .sticky-left   {{ position: sticky; left: 0px;  background: #fff; z-index: 3; text-align: left; font-weight: 600; }}
+      .sticky-left-2 {{ position: sticky; left: {name_col_width}px; background: #fff; z-index: 3; }}
+      .sticky-left-3 {{ position: sticky; left: {name_col_width + tot_col_width}px; background: #fff; z-index: 3; }}
+
+      /* emphasize totals */
+      thead .tot-head {{ background: #eef6ff; font-weight: 700; }}
+      tbody td.tot    {{ background: #f5faff; font-weight: 700; }}
+
+      tbody tr:nth-child(even) {{ background: #fcfcfc; }}
+      tbody tr.hl {{ background: #fff7cc !important; font-weight: 700; }}
+      .name {{ min-width: {name_col_width}px; }}
+      .totcol {{ min-width: {tot_col_width}px; }}
+      .daycol {{ width: {day_cell_w}px; min-width: {day_cell_w}px; max-width: {day_cell_w}px; }}
     </style>
     """
 
-    # Compute column widths (tweak to taste)
-    name_col_width = 140
-    total_cols_width = 80  # each
-    day_cell_width = 48    # P and IP are narrow
-
-    # Header rows
-    h1 = f"<tr><th class='sticky-left' style='min-width:{name_col_width}px' rowspan='3'>Pitcher</th>" \
-         f"<th class='sticky-left-2' style='min-width:{total_cols_width}px' rowspan='3'>Total P</th>" \
-         f"<th class='sticky-left-3' style='min-width:{total_cols_width}px' rowspan='3'>Total IP</th>"
+    # header rows
+    h1 = (
+        f"<tr>"
+        f"<th class='sticky-left' rowspan='3'>Pitcher</th>"
+        f"<th class='sticky-left-2 tot-head' rowspan='3' title='Total pitches in window'>Total P ({int(days_back)}d)</th>"
+        f"<th class='sticky-left-3 tot-head' rowspan='3' title='Total innings pitched in window'>Total IP ({int(days_back)}d)</th>"
+    )
     for mon, span in month_spans.items():
         h1 += f"<th colspan='{span*2}'>{mon}</th>"
     h1 += "</tr>"
 
-    # Row 2: date number + DOW (each date cell spans 2 columns)
     h2 = "<tr>"
     for d in date_index:
         h2 += f"<th colspan='2'>{d.day}<br>{dow(d)}</th>"
     h2 += "</tr>"
 
-    # Row 3: P / IP under each date
     h3 = "<tr>"
     for _ in date_index:
         h3 += "<th>P</th><th>IP</th>"
     h3 += "</tr>"
 
-    # Sort pitchers by Total P desc (last N days)
+    # mapping for quick lookup
+    key_to_vals = {(r["Pitcher"], r["DateOnly"]): (int(r["P"]), r["IP"]) for _, r in daily.iterrows()}
+
+    # order by total P desc
     totals_sorted = totals.sort_values(["TotalP", "Pitcher"], ascending=[False, True])
 
-    # Map for quick lookups
-    # (Pitcher, date) -> (P, IP)
-    key_to_vals = {(r["Pitcher"], r["DateOnly"]): (int(r["P"]), r["IP"]) for _, r in daily.iterrows()}
-    name_safe = (highlight_name or "").strip().lower()
-
-    # Build rows
     body_rows = []
-    for _, row in totals_sorted.iterrows():
-        p_name = row["Pitcher"]
-        row_class = "hl" if p_name and p_name.strip().lower() == name_safe else ""
-        tr = f"<tr class='{row_class}'>"
-        tr += f"<td class='name sticky-left' style='min-width:{name_col_width}px'>{p_name}</td>"
-        tr += f"<td class='sticky-left-2' style='min-width:{total_cols_width}px'>{int(row['TotalP'])}</td>"
-        tr += f"<td class='sticky-left-3' style='min-width:{total_cols_width}px'>{row['TotalIP']}</td>"
-
+    for _, r in totals_sorted.iterrows():
+        p_name = r["Pitcher"]
+        rowcls = "hl" if p_name and p_name.strip().lower() == highlight_name else ""
+        tr = f"<tr class='{rowcls}'>"
+        tr += f"<td class='name sticky-left'>{p_name}</td>"
+        tr += f"<td class='tot sticky-left-2 totcol'>{int(r['TotalP'])}</td>"
+        tr += f"<td class='tot sticky-left-3 totcol'>{r['TotalIP']}</td>"
         for d in date_index.date:
             P, IP = key_to_vals.get((p_name, d), (0, ""))
-            tr += f"<td style='min-width:{day_cell_width}px'>{P if P>0 else ''}</td>"
-            tr += f"<td style='min-width:{day_cell_width}px'>{IP}</td>"
+            # put P only if >0 to keep the view clean
+            tr += f"<td class='daycol'>{P if P>0 else ''}</td>"
+            tr += f"<td class='daycol'>{IP}</td>"
         tr += "</tr>"
         body_rows.append(tr)
 
@@ -1645,11 +1659,9 @@ with tab_biomech:
     table_html += f"<thead>{h1}{h2}{h3}</thead><tbody>{''.join(body_rows)}</tbody></table></div>"
 
     st.markdown(table_html, unsafe_allow_html=True)
-
-    # Small legend / notes
     st.caption(
-        "IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
-        "IP shown as baseball decimals (e.g., 1.2 = 5 outs)."
+        "Totals reflect the selected window. IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
+        "IP shown in baseball decimals (e.g., 1.2 = 5 outs)."
     )
 
 
