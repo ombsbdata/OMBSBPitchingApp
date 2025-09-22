@@ -1170,7 +1170,7 @@ def generate_by_date_overall_table():
             return
 
         out = pd.DataFrame(rows).sort_values("Date")
-        st.subheader("By-Date (Overall) — Pitch Flight Data")
+        st.subheader("Performance Summary by Outing")
         # Nice display: force date col to be pretty; leverage your existing formatter
         out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
         cols = ["Date","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%"]
