@@ -1872,251 +1872,214 @@ with tab_biomech:
         "IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
         "IP shown in baseball decimals (e.g., 1.2 = 5 outs)."
     )
-        # ==== VALD (ForceDecks) section ====================================================
+    # ==== VALD (ForceDecks) section (name-only matching; assumes only OLE_REB data is present) ====
     st.markdown("---")
     st.subheader("VALD (ForceDecks)")
     
     @st.cache_data(show_spinner=False)
     def load_vald_df() -> pd.DataFrame:
-        # Try uploaded file first, then repo path
+        # Look in common places
         cand = ["/mnt/data/VALD_Master.csv", "data/vald/VALD_Master.csv", "VALD_Master.csv"]
         path = next((p for p in cand if os.path.exists(p)), None)
         if not path:
-            return pd.DataFrame()
+            return pd.DataFrame(), None, None, None
         df = pd.read_csv(path)
-        # Standardize column names a bit (strip)
         df.columns = [str(c).strip() for c in df.columns]
-        # Required columns: name + date at least
-        # Typical name column: "Name_LastFirst"
+    
+        # Name column
         name_col = next((c for c in df.columns if c.lower() in ("name_lastfirst","name","player","athlete")), None)
-        if name_col is None:
-            return pd.DataFrame()
-        # Normalize key for joins/lookups
+        if not name_col:
+            return pd.DataFrame(), None, None, None
         df["VALD_Player"] = df[name_col].astype(str).str.strip()
         df["PlayerKey"] = df["VALD_Player"].apply(canon_key_last_first)
-        # Date column heuristic
+    
+        # Date column
         date_col = next((c for c in df.columns if c.lower() in ("date","test_date","datetime","timestamp")), None)
         if date_col:
             df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
             df = df[df[date_col].notna()]
         else:
-            # create synthetic date if absent
             df["Date"] = pd.NaT
             date_col = "Date"
-        # Detect Fresh/Post column
-        def _detect_fp_col(cols):
+    
+        # F/P column (optional)
+        def detect_fp_col(cols, df_):
             cands = [c for c in cols if c.lower() in ("f/p","fp","freshpost","band","session","condition")]
-            if cands:
-                return cands[0]
-            # heuristic search for columns containing only F/P/Fresh/Post
+            if cands: return cands[0]
             for c in cols:
-                vals = pd.Series(df[c].dropna().astype(str).str.strip().str.lower().unique()[:6])
-                if not len(vals):
-                    continue
-                ok = set(["f","p","fresh","post"])
-                if vals.isin(list(ok)).all():
+                vals = df_[c].dropna().astype(str).str.strip().str.lower().unique()
+                if len(vals) and set(vals).issubset({"f","p","fresh","post"}):
                     return c
             return None
-        fp_col = _detect_fp_col(df.columns)
+        fp_col = detect_fp_col(df.columns, df)
         if fp_col:
             df[fp_col] = df[fp_col].astype(str).str.strip()
         return df, name_col, date_col, fp_col
     
-    vald_loaded = load_vald_df()
-    if not isinstance(vald_loaded, tuple):
-        st.info("No VALD file found (`VALD_Master.csv`). Place it at `/mnt/data/` or `data/vald/`.")
+    vald_df, vald_name_col, vald_date_col, vald_fp_col = load_vald_df()
+    if vald_df is None or vald_df.empty:
+        st.info("No VALD file found or it is empty. Place `VALD_Master.csv` in `/mnt/data/` or `data/vald/`.")
     else:
-        vald_df, vald_name_col, vald_date_col, vald_fp_col = vald_loaded
-        if vald_df.empty:
-            st.info("VALD file is empty or missing required columns.")
+        # Build the name crosswalk from ALL pitchers in your main dataset
+        all_pitchers = sorted(season_df["Pitcher"].dropna().unique().tolist())
+        pitcher_key_map = {p: canon_key_last_first(p) for p in all_pitchers}
+        rev_key_to_pitcher = {v: k for k, v in pitcher_key_map.items()}
+    
+        # Keep only VALD rows that match one of your pitchers by normalized key
+        vald_cut = vald_df[vald_df["PlayerKey"].isin(rev_key_to_pitcher.keys())].copy()
+        if vald_cut.empty:
+            st.info("No VALD rows matched any pitcher names in your season CSV.")
         else:
-            # ---- Controls
-            # Limit to the same team currently selected above (best-effort, via pitcher name join)
-            # Build a small crosswalk of team pitchers in this tab's window
-            team_pitchers = sorted(df_src.loc[df_src["PitcherTeam"] == team_sel, "Pitcher"].dropna().unique().tolist())
-            pitcher_keys = {p: canon_key_last_first(p) for p in team_pitchers}
-            vald_cut = vald_df[vald_df["PlayerKey"].isin(pitcher_keys.values())].copy()
-            if vald_cut.empty:
-                st.info(f"No VALD rows that match pitchers on team **{team_sel}**.")
+            # ---------- Controls ----------
+            c1, c2, c3 = st.columns([1.2, 0.9, 1.7])
+            with c1:
+                view_mode = st.radio(
+                    "Table view",
+                    ["Cumulative Average", "Individual Tests"],
+                    index=0,
+                    horizontal=True,
+                    help="Cumulative Average aggregates in the selected date range (and F/P filter) per player."
+                )
+            with c2:
+                if vald_fp_col:
+                    fp_opt = st.selectbox("Fresh/Post filter", ["Both","F","P","Fresh","Post"], index=0)
+                else:
+                    fp_opt = "Both"
+            with c3:
+                maxd = pd.to_datetime(vald_cut[vald_date_col].max()) if vald_date_col else None
+                mind = pd.to_datetime(vald_cut[vald_date_col].min()) if vald_date_col else None
+                if pd.notna(mind) and pd.notna(maxd):
+                    default_start = maxd - pd.Timedelta(days=90)
+                    date_range = st.date_input("Date range",
+                                               value=[default_start.date(), maxd.date()],
+                                               min_value=mind.date(), max_value=maxd.date())
+                else:
+                    date_range = None
+    
+            work = vald_cut.copy()
+            if vald_fp_col and fp_opt != "Both":
+                want_fresh = fp_opt.lower().startswith("f")
+                mask = work[vald_fp_col].str.lower().isin(["f","fresh"]) if want_fresh else work[vald_fp_col].str.lower().isin(["p","post"])
+                work = work[mask]
+            if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2:
+                sdt, edt = [pd.to_datetime(d) for d in date_range]
+                work = work[(work[vald_date_col] >= sdt) & (work[vald_date_col] <= edt)]
+    
+            # Identify numeric metric columns
+            non_metric = {vald_name_col, "VALD_Player", "PlayerKey", vald_date_col}
+            if vald_fp_col: non_metric.add(vald_fp_col)
+            metric_cols = [c for c in work.columns if c not in non_metric and pd.api.types.is_numeric_dtype(work[c])]
+    
+            # Shorten headers like "Concentric Mean Force [N] (L)" -> "CMF[N](L)"
+            import re
+            def short_header(col: str) -> str:
+                s = col.strip()
+                m = re.match(r"^\s*([^\[\(]+)\s*(\[[^\]]+\])?\s*(\([^\)]+\))?\s*$", s)
+                if not m: return s
+                phrase, units, side = m.group(1) or "", m.group(2) or "", m.group(3) or ""
+                words = re.findall(r"[A-Za-z]+", phrase)
+                initials = "".join(w[0].upper() for w in words if w)
+                return f"{(initials or phrase.strip().replace(' ', ''))}{units or ''}{side or ''}"
+    
+            short_map = {}
+            used = set()
+            for c in metric_cols:
+                base = short_header(c)
+                alias = base
+                k = 2
+                while alias in used:
+                    alias = f"{base}_{k}"
+                    k += 1
+                short_map[c] = alias
+                used.add(alias)
+    
+            # Build display frame
+            work["Pitcher"] = work["PlayerKey"].map(rev_key_to_pitcher).fillna(work["VALD_Player"])
+    
+            if view_mode == "Individual Tests":
+                disp = work[["Pitcher", vald_date_col] + ([vald_fp_col] if vald_fp_col else []) + metric_cols].copy()
             else:
-                # UI row 1: view mode, F/P filter, date window
-                c1, c2, c3 = st.columns([1.1, 0.8, 1.6])
-                with c1:
-                    view_mode = st.radio(
-                        "Table view",
-                        ["Cumulative Average", "Individual Tests"],
-                        index=0,
-                        horizontal=True,
-                        help="Cumulative Average: aggregates within the selected date range (and F/P filter) per player."
-                    )
-                with c2:
-                    if vald_fp_col:
-                        fp_opt = st.selectbox("Fresh/Post filter", ["Both","F","P","Fresh","Post"], index=0)
-                    else:
-                        fp_opt = "Both"
-                with c3:
-                    # default DR = last 90 days of VALD data available
-                    maxd = pd.to_datetime(vald_cut[vald_date_col].max()) if vald_date_col else None
-                    mind = pd.to_datetime(vald_cut[vald_date_col].min()) if vald_date_col else None
-                    if pd.notna(mind) and pd.notna(maxd):
-                        default_start = maxd - pd.Timedelta(days=90)
-                        date_range = st.date_input("Date range", value=[default_start.date(), maxd.date()],
-                                                   min_value=mind.date(), max_value=maxd.date())
-                    else:
-                        date_range = None
-    
-                # Apply filters: F/P + date range
-                work = vald_cut.copy()
-                if vald_fp_col and fp_opt != "Both":
-                    if fp_opt.lower().startswith("f"):
-                        work = work[work[vald_fp_col].str.lower().isin(["f","fresh"])]
-                    elif fp_opt.lower().startswith("p"):
-                        work = work[work[vald_fp_col].str.lower().isin(["p","post"])]
-                if date_range and isinstance(date_range, (list, tuple)) and len(date_range) == 2:
-                    sdt, edt = [pd.to_datetime(d) for d in date_range]
-                    work = work[(work[vald_date_col] >= sdt) & (work[vald_date_col] <= edt)]
-    
-                # Identify metric columns = numeric columns excluding id/date/fp
-                non_metric = set([vald_name_col, "VALD_Player", "PlayerKey", vald_date_col])
+                agg = (work.groupby("PlayerKey", as_index=False)
+                            .agg({vald_date_col: "max", **{c: "mean" for c in metric_cols}}))
+                agg["Pitcher"] = agg["PlayerKey"].map(rev_key_to_pitcher).fillna(agg["PlayerKey"])
+                disp = agg[["Pitcher", vald_date_col] + metric_cols].copy()
                 if vald_fp_col:
-                    non_metric.add(vald_fp_col)
-                metric_cols = [c for c in work.columns
-                               if c not in non_metric and pd.api.types.is_numeric_dtype(work[c])]
+                    mode_fp = (work.groupby("PlayerKey")[vald_fp_col]
+                                   .agg(lambda s: s.mode().iat[0] if not s.mode().empty else np.nan)).reset_index()
+                    disp = disp.merge(mode_fp, on="PlayerKey", how="left")
+                    disp = disp[["Pitcher", vald_date_col, vald_fp_col] + metric_cols]
     
-                # Build header shorteners + tooltips for display
-                def short_header(col: str) -> str:
-                    # Keep units/side tight, take initials of the lead phrase
-                    s = col.strip()
-                    # Split into: phrase [unit] (side)
-                    import re
-                    m = re.match(r"^\s*([^\[\(]+)\s*(\[[^\]]+\])?\s*(\([^\)]+\))?\s*$", s)
-                    if not m:
-                        return s
-                    phrase, units, side = m.group(1) or "", m.group(2) or "", m.group(3) or ""
-                    # initials of words in phrase
-                    words = re.findall(r"[A-Za-z]+", phrase)
-                    initials = "".join(w[0].upper() for w in words if len(w))
-                    initials = initials if initials else phrase.strip().replace(" ","")
-                    return f"{initials}{units or ''}{side or ''}"
+            # Column config with tooltips showing the full metric name
+            col_cfg = {
+                "Pitcher": st.column_config.Column("Pitcher", help="Matched by normalized last+first"),
+                vald_date_col: st.column_config.DateColumn(vald_date_col, help="Test date")
+            }
+            if vald_fp_col:
+                col_cfg[vald_fp_col] = st.column_config.Column(vald_fp_col, help="Fresh/Post label")
     
-                short_map = {c: short_header(c) for c in metric_cols}
-                # Ensure short names are unique (fallback with numeric suffix)
-                inv = {}
-                for full, short in list(short_map.items()):
-                    if short not in inv:
-                        inv[short] = full
-                    else:
-                        k = 2
-                        s2 = f"{short}_{k}"
-                        while s2 in inv:
-                            k += 1
-                            s2 = f"{short}_{k}"
-                        short_map[full] = s2
-                        inv[s2] = full
+            rename_map = {c: short_map[c] for c in metric_cols}
+            disp = disp.rename(columns=rename_map)
+            for short, full in {short_map[c]: c for c in metric_cols}.items():
+                col_cfg[short] = st.column_config.NumberColumn(short, help=full, format="%.2f")
     
-                # Streamlit column_config with tooltips
-                col_cfg = {}
-                # For the ID/date/F/P columns we keep friendly labels
-                col_cfg["Pitcher"] = st.column_config.Column("Pitcher", help="Matched pitcher name")
-                if vald_fp_col:
-                    col_cfg[vald_fp_col] = st.column_config.Column(vald_fp_col, help="Fresh/Post")
-                col_cfg[vald_date_col] = st.column_config.DateColumn(vald_date_col, help="Test date")
+            st.markdown("**VALD Tests Table**")
+            st.dataframe(disp.sort_values(["Pitcher", vald_date_col]),
+                         use_container_width=True, hide_index=True, column_config=col_cfg)
     
-                # Prepare display DF
-                # Attach pitcher display name by reverse-lookup PlayerKey
-                rev_lookup = {v: k for k, v in pitcher_keys.items()}
-                work["Pitcher"] = work["PlayerKey"].map(rev_lookup).fillna(work["VALD_Player"])
+            # ---------- Rolling charts ----------
+            st.markdown("**Rolling charts**")
+            rc1, rc2, rc3 = st.columns([1.2, 1.5, 0.9])
+            with rc1:
+                p_for_chart = st.selectbox(
+                    "Player",
+                    options=sorted(disp["Pitcher"].dropna().unique().tolist()),
+                    index=(sorted(disp["Pitcher"].dropna().unique().tolist()).index(pitcher_name)
+                           if pitcher_name in disp["Pitcher"].values else 0)
+                )
+            with rc2:
+                metrics_to_plot = st.multiselect(
+                    "Metrics to include",
+                    options=[short_map[c] for c in metric_cols],
+                    default=[short_map[c] for c in metric_cols[:min(4, len(metric_cols))]]
+                )
+            with rc3:
+                roll_win = st.slider("Rolling window (tests)", 1, 10, 3, 1)
     
-                if view_mode == "Individual Tests":
-                    disp = work[[ "Pitcher", vald_date_col] + ([vald_fp_col] if vald_fp_col else []) + metric_cols].copy()
-                else:
-                    # Cumulative Average within range
-                    agg = (work
-                           .groupby("PlayerKey", as_index=False)
-                           .agg({vald_date_col: "max",  # last test date
-                                 **{c: "mean" for c in metric_cols}}))
-                    agg["Pitcher"] = agg["PlayerKey"].map(rev_lookup).fillna(agg["PlayerKey"])
-                    disp = agg[["Pitcher", vald_date_col] + metric_cols].copy()
-                    if vald_fp_col:
-                        # If you want FP in cumulative view, take the most frequent label for the window
-                        mode_fp = (work.groupby("PlayerKey")[vald_fp_col]
-                                        .agg(lambda s: s.mode().iat[0] if not s.mode().empty else np.nan)
-                                        .reset_index())
-                        disp = disp.merge(mode_fp, on="PlayerKey", how="left")
-                        disp = disp[["Pitcher", vald_date_col, vald_fp_col] + metric_cols]
+            series = work[work["Pitcher"] == p_for_chart].sort_values(vald_date_col).copy()
+            if series.empty:
+                st.info("No VALD tests for this player in the selected filters/date range.")
+            else:
+                tidy = []
+                inv = {v: k for k, v in short_map.items()}
+                for short in metrics_to_plot:
+                    full = inv.get(short)
+                    if full not in series.columns:
+                        continue
+                    s = series[[vald_date_col, full] + ([vald_fp_col] if vald_fp_col else [])].rename(columns={full: "Value"})
+                    s["Metric"] = short
+                    tidy.append(s)
+                if tidy:
+                    tidy = pd.concat(tidy, ignore_index=True)
+                    grp_keys = ["Metric"] + ([vald_fp_col] if vald_fp_col else [])
+                    out = []
+                    for _, g in tidy.groupby(grp_keys, dropna=False):
+                        g = g.sort_values(vald_date_col).copy()
+                        g["Roll"] = g["Value"].rolling(window=roll_win, min_periods=1).mean()
+                        out.append(g)
+                    tidy = pd.concat(out, ignore_index=True)
     
-                # Rename metric columns to short labels for display, build tooltips
-                rename_map = {c: short_map[c] for c in metric_cols}
-                disp = disp.rename(columns=rename_map)
-                for short, full in {short_map[c]: c for c in metric_cols}.items():
-                    col_cfg[short] = st.column_config.NumberColumn(short, help=full, format="%.2f")
-    
-                st.markdown("**Table**")
-                st.dataframe(disp.sort_values(["Pitcher", vald_date_col]),
-                             use_container_width=True,
-                             column_config=col_cfg,
-                             hide_index=True)
-    
-                # ---- Rolling charts (per-player)
-                st.markdown("**Rolling charts**")
-                rc1, rc2, rc3 = st.columns([1.1, 1.2, 0.9])
-                with rc1:
-                    p_for_chart = st.selectbox(
-                        "Player",
-                        options=sorted(disp["Pitcher"].dropna().unique().tolist()),
-                        index=(sorted(disp["Pitcher"].dropna().unique().tolist()).index(pitcher_name)
-                               if pitcher_name in disp["Pitcher"].values else 0)
+                    fig = px.line(
+                        tidy, x=vald_date_col, y="Roll",
+                        color="Metric",
+                        line_dash=(vald_fp_col if vald_fp_col else None),
+                        markers=True,
+                        title=f"Rolling ({roll_win}-test) — {p_for_chart}"
                     )
-                with rc2:
-                    metrics_to_plot = st.multiselect(
-                        "Metrics to include",
-                        options=[short_map[c] for c in metric_cols],
-                        default=[short_map[c] for c in metric_cols[:min(4, len(metric_cols))]]
-                    )
-                with rc3:
-                    roll_win = st.slider("Rolling window (tests)", 1, 10, 3, 1)
-    
-                series = work[work["Pitcher"] == p_for_chart].copy()
-                if series.empty:
-                    st.info("No VALD tests for this player in the current filters.")
+                    fig.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="Score", legend_title=None)
+                    st.plotly_chart(fig, use_container_width=True)
                 else:
-                    series = series.sort_values(vald_date_col)
-                    # Build a tidy frame: Date, Metric, Value, (optional) FP
-                    tidy_list = []
-                    for short in metrics_to_plot:
-                        full = inv.get(short, short)  # map short → full
-                        if full not in series.columns:
-                            continue
-                        s = series[[vald_date_col, full] + ([vald_fp_col] if vald_fp_col else [])].rename(columns={full: "Value"})
-                        s["Metric"] = short
-                        tidy_list.append(s)
-                    if tidy_list:
-                        tidy = pd.concat(tidy_list, ignore_index=True)
-                        # Rolling per metric (and FP slice if used)
-                        roll_frames = []
-                        grp_keys = ["Metric"] + ([vald_fp_col] if vald_fp_col else [])
-                        for gvals, gdf in tidy.groupby(grp_keys, dropna=False):
-                            gdf = gdf.sort_values(vald_date_col).copy()
-                            gdf["Roll"] = gdf["Value"].rolling(window=roll_win, min_periods=1).mean()
-                            roll_frames.append(gdf)
-                        tidy = pd.concat(roll_frames, ignore_index=True)
-    
-                        import plotly.express as px
-                        color = "Metric" if not vald_fp_col else "Metric"
-                        line_dash = None if not vald_fp_col else vald_fp_col
-                        fig = px.line(
-                            tidy, x=vald_date_col, y="Roll",
-                            color=color, line_dash=line_dash,
-                            markers=True,
-                            title=f"Rolling ({roll_win}-test) — {p_for_chart}"
-                        )
-                        fig.update_layout(template="plotly_white",
-                                          xaxis_title="Date", yaxis_title="Score",
-                                          legend_title=None)
-                        st.plotly_chart(fig, use_container_width=True)
-                    else:
-                        st.info("Select at least one metric to plot.")
-    # ==== End VALD (ForceDecks) section =================================================
+                    st.info("Select at least one metric to plot.")
+    # ==== End VALD (ForceDecks) section ====
 
 
 
