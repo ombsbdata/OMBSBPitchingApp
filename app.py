@@ -69,7 +69,7 @@ PLOTLY_COLORS = {
     "Slider": "mediumseagreen",
     "Curveball": "firebrick",
     "Cutter": "darkorange",
-    "Changeup": "mediumpurple",
+    "Changeup": "pink",
     "Splitter": "teal",
     "Knuckleball": "gray",
     "PitchOut": "lightgray",
