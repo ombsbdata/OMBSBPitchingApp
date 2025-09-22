@@ -1069,17 +1069,46 @@ def plot_pitch_movement():
 
 def generate_by_date_overall_table():
     """
-    One row per Date (date-only) using the *filtered_df* slice and current sidebar filters.
-    Columns: Pitches, BIP, Strike%, InZone%, Swing%, SwStr%, InZoneWhiff%, FP Strike%,
-             Stuff+, Contact%, GB%, FB%, Soft%, Hard%
+    One row per Date (date-only).
+    By default, IGNORE the sidebar date filter and show all outings for the current pitcher
+    (and other active filters). A toggle lets you switch back to the date-filtered slice.
     """
     try:
-        df = filtered_df.copy()
+        # --- UI toggle (default ON) ---
+        show_all = st.checkbox(
+            "Show all outings (ignore date filter)",
+            value=True,
+            help="When ON, this table ignores the sidebar date selection and shows every outing in the season file."
+        )
+
+        # --- Build the source slice ---
+        if show_all:
+            # Start from the full season_df and apply all filters EXCEPT date
+            df = season_df.copy()
+            if df.empty or "Date" not in df.columns:
+                st.info("No data available for By-Date table.")
+                return
+
+            # Apply the same non-date filters as filter_data()
+            if "Pitcher" in df.columns:
+                df = df[df["Pitcher"] == pitcher_name]
+            if batter_side != "Both" and "BatterSide" in df.columns:
+                df = df[df["BatterSide"] == batter_side]
+            if strikes != "All" and "Strikes" in df.columns:
+                df = df[df["Strikes"] == strikes]
+            if balls != "All" and "Balls" in df.columns:
+                df = df[df["Balls"] == balls]
+            if selected_types and "PitchType" in df.columns:
+                df = df[df["PitchType"].isin(selected_types)]
+        else:
+            # Respect the full sidebar filter set (including date) by using the global filtered_df
+            df = filtered_df.copy()
+
         if df.empty or "Date" not in df.columns:
             st.info("No data available for By-Date table.")
             return
 
-        # Ensure helpers/columns exist and are numeric where needed
+        # Ensure datatypes
         if "StuffPlus" in df.columns:
             df["StuffPlus"] = pd.to_numeric(df["StuffPlus"], errors="coerce")
         if "ExitSpeed" in df.columns:
@@ -1087,75 +1116,72 @@ def generate_by_date_overall_table():
         if "Angle" in df.columns:
             df["Angle"] = pd.to_numeric(df["Angle"], errors="coerce")
 
-        # Categorize batted-ball type (to compute GB%/FB%)
-        def categorize_batted_type(angle):
-            if pd.isna(angle):
-                return np.nan
-            angle = float(angle)
-            if angle < 10:
-                return "GroundBall"
-            elif 10 <= angle < 25:
-                return "LineDrive"
-            elif 25 <= angle < 50:
-                return "FlyBall"
-            else:
-                return "PopUp"
+        # Batted-ball categorization
+        def _batted_type(angle):
+            if pd.isna(angle): return np.nan
+            a = float(angle)
+            if a < 10: return "GroundBall"
+            if a < 25: return "LineDrive"
+            if a < 50: return "FlyBall"
+            return "PopUp"
 
-        if "Angle" in df.columns:
-            df["BattedType"] = df["Angle"].apply(categorize_batted_type)
-        else:
-            df["BattedType"] = np.nan
+        df["BattedType"] = df["Angle"].apply(_batted_type) if "Angle" in df.columns else np.nan
 
         # Date-only key
-        df["DateOnly"] = df["Date"].dt.date
+        df["DateOnly"] = pd.to_datetime(df["Date"], errors="coerce").dt.date
+        df = df[df["DateOnly"].notna()]
+        if df.empty:
+            st.info("No valid dates to display.")
+            return
 
+        # Flags
         swing_flags  = ["StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"]
         strike_flags = ["StrikeCalled", "FoulBallFieldable", "FoulBallNotFieldable", "StrikeSwinging", "InPlay"]
 
+        # Aggregate per Date
         rows = []
         for d, day in df.groupby("DateOnly"):
             total = len(day)
-            if total == 0:
-                continue
+            if total == 0: continue
 
-            # Zones & flags
-            in_zone = calculate_in_zone(day)
+            in_zone = calculate_in_zone(day) if {"PlateLocHeight","PlateLocSide"}.issubset(day.columns) else day.iloc[0:0]
             swings = day["PitchCall"].isin(swing_flags).sum()
             whiffs = (day["PitchCall"] == "StrikeSwinging").sum()
-            in_zone_whiffs = in_zone[in_zone["PitchCall"] == "StrikeSwinging"].shape[0]
+            in_zone_whiffs = in_zone[in_zone["PitchCall"] == "StrikeSwinging"].shape[0] if not in_zone.empty else 0
             strikes_all = day["PitchCall"].isin(strike_flags).sum()
             bip_df = day[day["PitchCall"] == "InPlay"]
 
-            # First-pitch strike %
-            fp_df = day[(day.get("Balls", pd.Series(dtype=float)) == 0) & (day.get("Strikes", pd.Series(dtype=float)) == 0)]
-            fp_total = len(fp_df)
-            fp_strikes = fp_df[~fp_df["PitchCall"].isin(["HitByPitch", "BallCalled", "BallInDirt", "BallinDirt"])].shape[0]
-            fp_strike_pct = (fp_strikes / fp_total * 100) if fp_total > 0 else 0.0
+            # First-pitch strike
+            if {"Balls","Strikes"}.issubset(day.columns):
+                fp_df = day[(day["Balls"] == 0) & (day["Strikes"] == 0)]
+                fp_total = len(fp_df)
+                fp_strikes = fp_df[~fp_df["PitchCall"].isin(["HitByPitch", "BallCalled", "BallInDirt", "BallinDirt"])].shape[0]
+                fp_strike_pct = (fp_strikes / fp_total * 100) if fp_total > 0 else 0.0
+            else:
+                fp_strike_pct = 0.0
 
             # Contact% (of swings)
             contact = day["PitchCall"].isin(["InPlay","FoulBallNotFieldable","FoulBallFieldable"]).sum()
             contact_pct = (contact / swings * 100) if swings else 0.0
 
-            # Batted-ball split rates (of BIP)
+            # BIP splits
             gb_pct = (bip_df["BattedType"].eq("GroundBall").mean() * 100) if len(bip_df) else 0.0
             fb_pct = (bip_df["BattedType"].eq("FlyBall").mean() * 100) if len(bip_df) else 0.0
             hard_pct = (bip_df["ExitSpeed"].ge(95).mean() * 100) if ("ExitSpeed" in bip_df.columns and len(bip_df)) else 0.0
             soft_pct = (bip_df["ExitSpeed"].lt(95).mean() * 100) if ("ExitSpeed" in bip_df.columns and len(bip_df)) else 0.0
 
-            # Stuff+ (simple mean of available pitches that day)
-            stuff_mean = float(bip_df["StuffPlus"].mean()) if ("StuffPlus" in day.columns and day["StuffPlus"].notna().any()) else np.nan
-            if np.isnan(stuff_mean) and "StuffPlus" in day.columns:
-                stuff_mean = float(day["StuffPlus"].mean())
+            # Stuff+ mean (use all pitches that day; fallback safe)
+            stuff_mean = float(day["StuffPlus"].mean()) if "StuffPlus" in day.columns and day["StuffPlus"].notna().any() else np.nan
 
             rows.append({
                 "Date": d,
                 "Pitches": int(total),
                 "BIP": int(len(bip_df)),
-                "Strike%": (strikes_all / total * 100) if total else 0.0,
-                "InZone%": (len(in_zone) / total * 100) if total else 0.0,
-                "Swing%": (swings / total * 100) if total else 0.0,
-                "SwStr%": (whiffs / total * 100) if total else 0.0,
-                "InZoneWhiff%": (in_zone_whiffs / len(in_zone) * 100) if len(in_zone) else 0.0,
+                "Strike%": (strikes_all / total * 100),
+                "InZone%": (len(in_zone) / total * 100) if total and not in_zone.empty else 0.0,
+                "Swing%": (swings / total * 100),
+                "SwStr%": (whiffs / total * 100),
+                "InZoneWhiff%": (in_zone_whiffs / len(in_zone) * 100) if (not in_zone.empty and len(in_zone) > 0) else 0.0,
                 "FP Strike%": fp_strike_pct,
                 "Stuff+": round(stuff_mean, 1) if pd.notna(stuff_mean) else np.nan,
                 "Contact%": contact_pct,
@@ -1170,11 +1196,12 @@ def generate_by_date_overall_table():
             return
 
         out = pd.DataFrame(rows).sort_values("Date")
-        st.subheader("Performance Summary by Outing")
-        # Nice display: force date col to be pretty; leverage your existing formatter
         out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
+
+        st.subheader("By-Date (Overall) — Pitch Flight Data")
         cols = ["Date","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%"]
         st.dataframe(format_dataframe(out[cols]), use_container_width=True, hide_index=True)
+
     except Exception as e:
         st.error(f"Error generating By-Date table: {e}")
 
