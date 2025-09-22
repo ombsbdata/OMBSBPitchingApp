@@ -1872,64 +1872,144 @@ with tab_biomech:
         "IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
         "IP shown in baseball decimals (e.g., 1.2 = 5 outs)."
     )
-    # ==== VALD (ForceDecks) section (name-only matching; assumes only OLE_REB data is present) ====
+     # ==== VALD (ForceDecks) section — robust name matching (dual keys, suffix tolerant) ====
     st.markdown("---")
     st.subheader("VALD (ForceDecks)")
     
     @st.cache_data(show_spinner=False)
-    def load_vald_df() -> pd.DataFrame:
+    def load_vald_df():
         # Look in common places
         cand = ["/mnt/data/VALD_Master.csv", "data/vald/VALD_Master.csv", "VALD_Master.csv"]
         path = next((p for p in cand if os.path.exists(p)), None)
         if not path:
             return pd.DataFrame(), None, None, None
+    
         df = pd.read_csv(path)
         df.columns = [str(c).strip() for c in df.columns]
     
-        # Name column
+        # ---- detect key columns ----
         name_col = next((c for c in df.columns if c.lower() in ("name_lastfirst","name","player","athlete")), None)
         if not name_col:
             return pd.DataFrame(), None, None, None
-        df["VALD_Player"] = df[name_col].astype(str).str.strip()
-        df["PlayerKey"] = df["VALD_Player"].apply(canon_key_last_first)
     
-        # Date column
         date_col = next((c for c in df.columns if c.lower() in ("date","test_date","datetime","timestamp")), None)
         if date_col:
             df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-            df = df[df[date_col].notna()]
+            df = df[df[date_col].notna()].copy()
         else:
             df["Date"] = pd.NaT
             date_col = "Date"
     
-        # F/P column (optional)
-        def detect_fp_col(cols, df_):
+        # Optional F/P column
+        def detect_fp_col(cols, dframe):
             cands = [c for c in cols if c.lower() in ("f/p","fp","freshpost","band","session","condition")]
-            if cands: return cands[0]
+            if cands:
+                return cands[0]
             for c in cols:
-                vals = df_[c].dropna().astype(str).str.strip().str.lower().unique()
+                vals = dframe[c].dropna().astype(str).str.strip().str.lower().unique()
                 if len(vals) and set(vals).issubset({"f","p","fresh","post"}):
                     return c
             return None
+    
         fp_col = detect_fp_col(df.columns, df)
         if fp_col:
             df[fp_col] = df[fp_col].astype(str).str.strip()
+    
+        # ---- robust dual keys for matching ----
+        import re
+        SUFFIXES = {"jr","sr","ii","iii","iv","v"}
+    
+        def _letters_only(s: str) -> str:
+            return re.sub(r"[^A-Za-z]", "", s or "").lower()
+    
+        def _strip_suffix_token(tok: str) -> bool:
+            w = re.sub(r"[^\w]", "", (tok or "")).lower()
+            return w in SUFFIXES
+    
+        def key_last_first(name: str) -> str:
+            """Normalize 'Last, First [Middle] [Suffix]' → 'lastfirst' (letters only)."""
+            s = str(name or "").strip()
+            if "," in s:
+                last, first = [p.strip() for p in s.split(",", 1)]
+            else:
+                parts = s.split()
+                if len(parts) >= 2:
+                    last, first = parts[0], " ".join(parts[1:])
+                else:
+                    last, first = s, ""
+            last_parts  = [p for p in last.split()  if not _strip_suffix_token(p)]
+            first_parts = [p for p in first.split() if not _strip_suffix_token(p)]
+            return _letters_only("".join(last_parts) + "".join(first_parts))
+    
+        def key_first_last(name: str) -> str:
+            """Normalize 'First [Middle] Last [Suffix]' → 'lastfirst' (letters only)."""
+            s = str(name or "").strip().replace(",", " ")
+            parts = [p for p in s.split() if not _strip_suffix_token(p)]
+            if len(parts) >= 2:
+                last = parts[-1]
+                first = " ".join(parts[:-1])
+            else:
+                last, first = s, ""
+            return _letters_only(last + first)
+    
+        df["VALD_Player"] = df[name_col].astype(str).str.strip()
+        df["Key_LF"] = df["VALD_Player"].apply(key_last_first)
+        df["Key_FL"] = df["VALD_Player"].apply(key_first_last)
+    
         return df, name_col, date_col, fp_col
     
+    
     vald_df, vald_name_col, vald_date_col, vald_fp_col = load_vald_df()
+    
     if vald_df is None or vald_df.empty:
         st.info("No VALD file found or it is empty. Place `VALD_Master.csv` in `/mnt/data/` or `data/vald/`.")
     else:
-        # Build the name crosswalk from ALL pitchers in your main dataset
+        # ---- build season pitcher key map with both variants ----
+        import re as _re
         all_pitchers = sorted(season_df["Pitcher"].dropna().unique().tolist())
-        pitcher_key_map = {p: canon_key_last_first(p) for p in all_pitchers}
-        rev_key_to_pitcher = {v: k for k, v in pitcher_key_map.items()}
     
-        # Keep only VALD rows that match one of your pitchers by normalized key
-        vald_cut = vald_df[vald_df["PlayerKey"].isin(rev_key_to_pitcher.keys())].copy()
+        def season_key_first_last(p):
+            s = _re.sub(r"\s+", " ", str(p).strip().replace(",", " "))
+            parts = s.split()
+            if len(parts) >= 2:
+                last = parts[-1]
+                first = " ".join(parts[:-1])
+            else:
+                last, first = s, ""
+            return _re.sub(r"[^A-Za-z]", "", (last + first)).lower()
+    
+        key_to_pitcher = {}
+        for p in all_pitchers:
+            for k in {canon_key_last_first(p), season_key_first_last(p)}:
+                if k:
+                    key_to_pitcher.setdefault(k, p)
+    
+        # ---- match VALD rows by either key ----
+        match_mask = vald_df["Key_LF"].isin(key_to_pitcher) | vald_df["Key_FL"].isin(key_to_pitcher)
+        vald_cut = vald_df.loc[match_mask].copy()
+    
+        # Helpful debug expander
+        with st.expander("VALD name matching debug", expanded=False):
+            st.write(f"Pitchers in season_df: {len(all_pitchers)}")
+            st.write(f"VALD rows: {len(vald_df)}  •  matched: {len(vald_cut)}")
+            if len(vald_cut) < len(vald_df):
+                sample_unmatched = (
+                    vald_df.loc[~match_mask, [vald_name_col, "Key_LF", "Key_FL"]]
+                           .drop_duplicates()
+                           .head(20)
+                )
+                st.write("Unmatched (sample):")
+                st.dataframe(sample_unmatched, use_container_width=True)
+    
         if vald_cut.empty:
-            st.info("No VALD rows matched any pitcher names in your season CSV.")
+            st.warning("No VALD rows matched any pitcher names after robust normalization.")
         else:
+            # Map matched rows to canonical season pitcher names
+            def to_pitcher(row):
+                return key_to_pitcher.get(row["Key_LF"]) or key_to_pitcher.get(row["Key_FL"]) or row["VALD_Player"]
+    
+            vald_cut["Pitcher"] = vald_cut.apply(to_pitcher, axis=1)
+    
             # ---------- Controls ----------
             c1, c2, c3 = st.columns([1.2, 0.9, 1.7])
             with c1:
@@ -1966,7 +2046,7 @@ with tab_biomech:
                 work = work[(work[vald_date_col] >= sdt) & (work[vald_date_col] <= edt)]
     
             # Identify numeric metric columns
-            non_metric = {vald_name_col, "VALD_Player", "PlayerKey", vald_date_col}
+            non_metric = {vald_name_col, "VALD_Player", "Key_LF", "Key_FL", "Pitcher", vald_date_col}
             if vald_fp_col: non_metric.add(vald_fp_col)
             metric_cols = [c for c in work.columns if c not in non_metric and pd.api.types.is_numeric_dtype(work[c])]
     
@@ -1981,8 +2061,7 @@ with tab_biomech:
                 initials = "".join(w[0].upper() for w in words if w)
                 return f"{(initials or phrase.strip().replace(' ', ''))}{units or ''}{side or ''}"
     
-            short_map = {}
-            used = set()
+            short_map, used = {}, set()
             for c in metric_cols:
                 base = short_header(c)
                 alias = base
@@ -1993,25 +2072,21 @@ with tab_biomech:
                 short_map[c] = alias
                 used.add(alias)
     
-            # Build display frame
-            work["Pitcher"] = work["PlayerKey"].map(rev_key_to_pitcher).fillna(work["VALD_Player"])
-    
+            # ---------- Table ----------
             if view_mode == "Individual Tests":
                 disp = work[["Pitcher", vald_date_col] + ([vald_fp_col] if vald_fp_col else []) + metric_cols].copy()
             else:
-                agg = (work.groupby("PlayerKey", as_index=False)
+                agg = (work.groupby("Pitcher", as_index=False)
                             .agg({vald_date_col: "max", **{c: "mean" for c in metric_cols}}))
-                agg["Pitcher"] = agg["PlayerKey"].map(rev_key_to_pitcher).fillna(agg["PlayerKey"])
                 disp = agg[["Pitcher", vald_date_col] + metric_cols].copy()
                 if vald_fp_col:
-                    mode_fp = (work.groupby("PlayerKey")[vald_fp_col]
+                    mode_fp = (work.groupby("Pitcher")[vald_fp_col]
                                    .agg(lambda s: s.mode().iat[0] if not s.mode().empty else np.nan)).reset_index()
-                    disp = disp.merge(mode_fp, on="PlayerKey", how="left")
+                    disp = disp.merge(mode_fp, on="Pitcher", how="left")
                     disp = disp[["Pitcher", vald_date_col, vald_fp_col] + metric_cols]
     
-            # Column config with tooltips showing the full metric name
             col_cfg = {
-                "Pitcher": st.column_config.Column("Pitcher", help="Matched by normalized last+first"),
+                "Pitcher": st.column_config.Column("Pitcher", help="Matched by robust normalization (First/Last variants; suffix tolerant)"),
                 vald_date_col: st.column_config.DateColumn(vald_date_col, help="Test date")
             }
             if vald_fp_col:
