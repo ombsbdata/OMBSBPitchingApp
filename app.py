@@ -256,6 +256,11 @@ else:
 if TEAM_FILTER and "PitcherTeam" in season_df.columns:
     season_df = season_df[season_df["PitcherTeam"] == TEAM_FILTER]
 
+# Apply Game Type filter globally to the pitching datasets
+season_df  = _apply_game_type_filter(season_df)
+rolling_df = _apply_game_type_filter(rolling_df)
+
+
 
 ### Bio Mech Functions
 
@@ -354,6 +359,23 @@ def load_biomech_workbook() -> pd.DataFrame:
 # -----------------------------------------------------------------------------------
 st.title("Pitcher Reports (2025 Season)")
 st.sidebar.header("Filters")
+
+# ---- Game Type filter (applies to season_df / rolling_df if column exists)
+st.sidebar.subheader("Game Type")
+game_type_choice = st.sidebar.selectbox(
+    "Show pitches from:",
+    ["All", "LBP", "IS"],
+    index=0,  # default to All
+    help="Filters the pitching data by the 'game_type' column if present."
+)
+
+def _apply_game_type_filter(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if "game_type" in df.columns and game_type_choice != "All":
+        return df[df["game_type"] == game_type_choice]
+    return df
+
 
 pitchers = sorted(season_df["Pitcher"].dropna().unique().tolist()) if "Pitcher" in season_df.columns else []
 if not pitchers:
