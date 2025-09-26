@@ -256,6 +256,15 @@ else:
 if TEAM_FILTER and "PitcherTeam" in season_df.columns:
     season_df = season_df[season_df["PitcherTeam"] == TEAM_FILTER]
 
+
+def _apply_game_type_filter(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return df
+    if "game_type" in df.columns and game_type_choice != "All":
+        return df[df["game_type"] == game_type_choice]
+    return df
+
+
 # Apply Game Type filter globally to the pitching datasets
 season_df  = _apply_game_type_filter(season_df)
 rolling_df = _apply_game_type_filter(rolling_df)
@@ -369,12 +378,6 @@ game_type_choice = st.sidebar.selectbox(
     help="Filters the pitching data by the 'game_type' column if present."
 )
 
-def _apply_game_type_filter(df: pd.DataFrame) -> pd.DataFrame:
-    if df is None or df.empty:
-        return df
-    if "game_type" in df.columns and game_type_choice != "All":
-        return df[df["game_type"] == game_type_choice]
-    return df
 
 
 pitchers = sorted(season_df["Pitcher"].dropna().unique().tolist()) if "Pitcher" in season_df.columns else []
