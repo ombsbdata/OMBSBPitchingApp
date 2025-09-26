@@ -256,18 +256,16 @@ else:
 if TEAM_FILTER and "PitcherTeam" in season_df.columns:
     season_df = season_df[season_df["PitcherTeam"] == TEAM_FILTER]
 
-
-def _apply_game_type_filter(df: pd.DataFrame) -> pd.DataFrame:
+# after
+def _apply_game_type_filter(df: pd.DataFrame, choice: str | None = None) -> pd.DataFrame:
     if df is None or df.empty:
         return df
-    if "game_type" in df.columns and game_type_choice != "All":
-        return df[df["game_type"] == game_type_choice]
+    if choice and "game_type" in df.columns and choice != "All":
+        return df[df["game_type"] == choice]
     return df
 
 
-# Apply Game Type filter globally to the pitching datasets
-season_df  = _apply_game_type_filter(season_df)
-rolling_df = _apply_game_type_filter(rolling_df)
+
 
 
 
@@ -366,17 +364,22 @@ def load_biomech_workbook() -> pd.DataFrame:
 # -----------------------------------------------------------------------------------
 # Streamlit UI
 # -----------------------------------------------------------------------------------
+# --- Streamlit UI (put this BEFORE applying the filter) ---
 st.title("Pitcher Reports (2025 Season)")
 st.sidebar.header("Filters")
 
-# ---- Game Type filter (applies to season_df / rolling_df if column exists)
 st.sidebar.subheader("Game Type")
 game_type_choice = st.sidebar.selectbox(
     "Show pitches from:",
     ["All", "LBP", "IS"],
-    index=0,  # default to All
+    index=0,
     help="Filters the pitching data by the 'game_type' column if present."
 )
+
+# Now apply the filter using the chosen value
+season_df  = _apply_game_type_filter(season_df,  game_type_choice)
+rolling_df = _apply_game_type_filter(rolling_df, game_type_choice)
+
 
 
 
