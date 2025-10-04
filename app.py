@@ -37,8 +37,8 @@ SEASON_FILE = "Fall_2025_wRV_with_stuff.csv"     # main dataset (plays)
 ROLLING_FILE = "Fall_2025_wRV_with_stuff.csv"    # if you truly have a separate rolling file, point it here
 STUFFPLUS_FILE = "Fall_2025_wRV_with_stuff.csv"  # Stuff+ source; can be the same file in your case
 
-#TEAM_FILTER = "OLE_REB"  # change to None to allow all teams
-TEAM_FILTER = None
+TEAM_FILTER = "OLE_REB"  # change to None to allow all teams
+
 
 
 # Minimal columns we expect (app will degrade gracefully if some are missing)
