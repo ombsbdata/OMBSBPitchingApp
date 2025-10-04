@@ -373,7 +373,7 @@ st.sidebar.header("Filters")
 st.sidebar.subheader("Game Type")
 game_type_choice = st.sidebar.selectbox(
     "Show pitches from:",
-    ["All", "LBP", "IS"],
+    ["All", "LBP", "IS", "FallGame"],
     index=0,
     help="Filters the pitching data by the 'game_type' column if present."
 )
