@@ -2319,7 +2319,7 @@ with tab_biomech:
                 metrics_to_plot = st.multiselect(
                     "Metrics to include",
                     options=[short_map[c] for c in metric_cols],
-                    default=[short_map[c] for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate"]]
+                    default=[short_map[c] for c in ["PP[W]", "EPP[W]", "Jump Height (Flight Time) in Inches [in] ", "RM[m/s]"]]
                 )
 
             with rc3:
