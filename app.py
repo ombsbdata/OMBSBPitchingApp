@@ -2319,8 +2319,9 @@ with tab_biomech:
                 metrics_to_plot = st.multiselect(
                     "Metrics to include",
                     options=[short_map[c] for c in metric_cols],
-                    default=[short_map[c] for c in metric_cols[:min(4, len(metric_cols))]]
+                    default=[short_map[c] for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate"]]
                 )
+
             with rc3:
                 roll_win = st.slider("Rolling window (tests)", 1, 10, 3, 1)
     
