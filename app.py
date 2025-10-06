@@ -393,16 +393,7 @@ if not pitchers:
 pitcher_name = st.sidebar.selectbox("Select Pitcher:", pitchers, index=0)
 heatmap_type = st.sidebar.selectbox(
     "Select Heatmap Type:",
-    [
-        "Frequency (%)",
-        "Whiff Rate (%)",
-        "Swing Rate (%)",
-        "Exit Velocity (mph)",
-        "wOBA",
-        "xwOBA",
-    ],
-    index=0,
-    help="Choose what each bin shows. Whiff=whiffs/swings, Swing=swings/pitches, EV is BIP-only, wOBA/xwOBA average values."
+    ["Frequency", "Swing Rate", "Whiff Rate", "Exit Velocity", "wOBA", "xwOBA"]
 )
 
 batter_side = st.sidebar.selectbox("Select Batter Side:", ["Both", "Right", "Left"])
@@ -616,13 +607,13 @@ def plot_heatmaps(map_type: str):
     """
     Heatmaps by PitchType over plate location.
 
-    Supports:
-      - 'Frequency (%)'      : % of this pitch type
-      - 'Whiff Rate (%)'     : StrikeSwinging / swings   (ratio of smooths)
-      - 'Swing Rate (%)'     : swings / pitches          (ratio of smooths)
-      - 'Exit Velocity (mph)': mean ExitSpeed for InPlay (ratio of smooths of weighted sums)
-      - 'wOBA'               : mean wOBA_value/_result   (ratio of smooths)
-      - 'xwOBA'              : mean xwOBA_value/_result  (ratio of smooths)
+    Modes:
+      - Frequency            : % of this pitch type (per panel scale, feet-based sigma)  <-- restored
+      - Swing Rate           : swings / pitches            (ratio-of-smooths)
+      - Whiff Rate           : whiffs / swings             (ratio-of-smooths)
+      - Exit Velocity        : mean EV on BIP              (ratio-of-smooths, weighted sums)
+      - wOBA                 : mean wOBA_value/_result     (ratio-of-smooths)
+      - xwOBA                : mean xwOBA_value/_result    (ratio-of-smooths)
     """
     try:
         import numpy as np
@@ -630,66 +621,149 @@ def plot_heatmaps(map_type: str):
         import matplotlib.patches as patches
         from matplotlib.colors import Normalize
 
-        data = filtered_df.copy()
-        if data.empty:
+        pitcher_data = filtered_df.copy()
+        if pitcher_data.empty:
             st.info("No data available for the selected parameters.")
             return
 
-        need = {"PlateLocSide", "PlateLocHeight", "PitchType"}
-        if not need.issubset(data.columns):
+        needed = {"PlateLocSide", "PlateLocHeight", "PitchType"}
+        if not needed.issubset(pitcher_data.columns):
             st.info("Heatmap needs PlateLocSide, PlateLocHeight, PitchType columns.")
             return
 
-        # ---- column choices / keys ----
-        key = map_type
-        val_col = None
-        if map_type == "Frequency (%)":
-            key = "freq"
-        elif map_type == "Swing Rate (%)":
-            key = "swing"
-        elif map_type == "Whiff Rate (%)":
-            key = "whiff"
-        elif map_type == "Exit Velocity (mph)":
-            if "ExitSpeed" not in data.columns:
-                st.info("No ExitSpeed column available for Exit Velocity heatmap.")
-                return
-            key, val_col = "ev", "ExitSpeed"
-        elif map_type == "wOBA":
-            val_col = "wOBA_value" if "wOBA_value" in data.columns else ("wOBA_result" if "wOBA_result" in data.columns else None)
-            if val_col is None:
-                st.info("No wOBA_value (or wOBA_result) column available.")
-                return
-            key = "woba"
-        elif map_type == "xwOBA":
-            val_col = "xwOBA_value" if "xwOBA_value" in data.columns else ("xwOBA_result" if "xwOBA_result" in data.columns else None)
-            if val_col is None:
-                st.info("No xwOBA_value (or xwOBA_result) column available.")
-                return
-            key = "xwoba"
-
-        # ---- constants ----
-        N_COLS = 3
-        PANEL_IN = 5.5
-        # use a slightly coarser grid + stable smoothing so sparse bins fill in
-        NX, NY = 120, 120
-        CMAP = "turbo"
-        # minimum *smoothed* denominator to show a color
-        MIN_DEN = 1.0
-        # plate extents
+        # --- plate extents (keep as your app uses) ---
         x_min, x_max = -2.0, 2.0
         y_min, y_max =  1.0, 4.0
+
+        # strike zone
+        zone_w = 1.66166
+        z_x0 = -zone_w / 2
+        z_y0 = 1.5
+        z_h  = 3.3775 - 1.5
+
+        # Common grid
+        width_ft  = (x_max - x_min)
+        height_ft = (y_max - y_min)
+
+        # =========================
+        # FREQUENCY — RESTORED BEHAVIOR
+        # =========================
+        if map_type == "Frequency":
+            # Your previous “feel”: high grid density in ft + sigma in ft, panel-by-panel vmax
+            GRID_PER_FT = 140
+            SIGMA_FT_BASE = 0.20
+            SIGMA_FT_TINYBOOST = 0.35
+            TINY_N = 8
+            CMAP = "turbo"
+            GLOBAL_VMAX_Q = 0.97   # per-panel here, not shared
+
+            NX = max(64, int(width_ft  * GRID_PER_FT))
+            NY = max(64, int(height_ft * GRID_PER_FT))
+            x_edges = np.linspace(x_min, x_max, NX + 1)
+            y_edges = np.linspace(y_min, y_max, NY + 1)
+
+            # smoothing (sigma in pixels derived from feet)
+            try:
+                from scipy.ndimage import gaussian_filter
+                def _smooth(H, n):
+                    sx_px = max(1.0, SIGMA_FT_BASE * (NX / width_ft))
+                    sy_px = max(1.0, SIGMA_FT_BASE * (NY / height_ft))
+                    if n <= TINY_N:
+                        sx_px += SIGMA_FT_TINYBOOST * (NX / width_ft)
+                        sy_px += SIGMA_FT_TINYBOOST * (NY / height_ft)
+                    return gaussian_filter(H, sigma=(sx_px, sy_px), mode="nearest")
+            except Exception:
+                def _smooth(H, n):
+                    k = int(max(3, round((SIGMA_FT_BASE * (NX / width_ft)) * 3)))
+                    ker = np.ones((k, k), dtype=float); ker /= ker.sum()
+                    pad = k // 2
+                    P = np.pad(H, pad, mode="edge")
+                    out = np.zeros_like(H)
+                    for i in range(H.shape[0]):
+                        for j in range(H.shape[1]):
+                            out[i, j] = np.sum(P[i:i+k, j:j+k] * ker)
+                    return out
+
+            base = pitcher_data.dropna(subset=["PlateLocSide", "PlateLocHeight"]).copy()
+            if base.empty:
+                st.info("No data available to plot after filtering.")
+                return
+
+            pts = base["PitchType"].dropna().unique().tolist()
+
+            # layout
+            N_COLS = 3
+            PANEL_IN = 5.5
+            n_types = len(pts)
+            n_rows = int(np.ceil(n_types / N_COLS))
+            fig, axes = plt.subplots(n_rows, N_COLS, figsize=(PANEL_IN * N_COLS, PANEL_IN * n_rows),
+                                     constrained_layout=True)
+            axes = np.atleast_1d(axes).ravel()
+            for ax in axes: ax.axis("off")
+
+            extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
+
+            for i, pt in enumerate(pts):
+                sub = base[base["PitchType"] == pt]
+                n = len(sub)
+                if n == 0:
+                    continue
+
+                xs = sub["PlateLocSide"].values
+                ys = sub["PlateLocHeight"].values
+
+                H, _, _ = np.histogram2d(xs, ys, bins=[x_edges, y_edges])
+                H = (H / max(n, 1)) * 100.0  # percent of that pitch type
+                Hs = _smooth(H.T, n=n).T     # smooth
+
+                ax = axes[i]; ax.axis("on")
+                # per-panel normalization (NO shared vmax)
+                vmax_i = np.percentile(Hs[np.isfinite(Hs)], GLOBAL_VMAX_Q * 100.0) if np.isfinite(Hs).any() else 1.0
+                norm_i = Normalize(vmin=0.0, vmax=max(1e-9, float(vmax_i)))
+
+                im = ax.imshow(Hs.T, origin="lower", extent=extent, cmap=CMAP, norm=norm_i,
+                               interpolation="bilinear", aspect="equal")
+
+                # light raw points
+                ax.scatter(sub["PlateLocSide"], sub["PlateLocHeight"], s=6, c="white", alpha=0.25, linewidths=0)
+
+                # strike zone
+                ax.add_patch(patches.Rectangle((z_x0, z_y0), zone_w, z_h,
+                                               edgecolor="black", facecolor="none", linewidth=2))
+
+                ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
+                ax.set_xticks([]); ax.set_yticks([])
+                ax.set_title(f"{pt} — Frequency (n={n})", fontsize=11, pad=6)
+
+                cbar = fig.colorbar(im, ax=ax, fraction=0.036, pad=0.02)
+                cbar.ax.set_ylabel("% of pitches", rotation=90, labelpad=8)
+                cbar.ax.tick_params(labelsize=8)
+
+            # hide unused axes
+            for j in range(i + 1, len(axes)):
+                axes[j].axis("off")
+
+            fig.suptitle(f"{pitcher_name} • Frequency Heatmaps", fontsize=16, y=0.995)
+            st.pyplot(fig)
+            plt.close(fig)
+            return
+
+        # =========================
+        # NON-FREQUENCY — ACCURATE RATIO MAPS
+        # =========================
+        # Coarser, stable bin sigma in *bins* for robust ratios
+        NX, NY = 120, 120
         x_edges = np.linspace(x_min, x_max, NX + 1)
         y_edges = np.linspace(y_min, y_max, NY + 1)
+        CMAP = "turbo"
+        MIN_DEN = 1.0  # minimum smoothed denominator to color a bin
 
-        # smoothing
         try:
             from scipy.ndimage import gaussian_filter
             def _smooth(img):
-                # sigma in bins (not feet) so it’s robust to our NX/NY
                 return gaussian_filter(img, sigma=2.0, mode="nearest")
         except Exception:
             def _smooth(img):
-                # simple 5x5 box blur if SciPy not available
                 k = 5
                 ker = np.ones((k, k), dtype=float) / (k * k)
                 pad = k // 2
@@ -700,10 +774,9 @@ def plot_heatmaps(map_type: str):
                         out[i, j] = np.sum(P[i:i+k, j:j+k] * ker)
                 return out
 
-        # helpers
         def hist2d(x, y, w=None):
             H, _, _ = np.histogram2d(x, y, bins=[x_edges, y_edges], weights=w)
-            return H  # shape (NX, NY)
+            return H
 
         def ratio_of_smooths(num, den):
             num_s = _smooth(num)
@@ -712,61 +785,77 @@ def plot_heatmaps(map_type: str):
                 R = np.where(den_s >= MIN_DEN, num_s / den_s, np.nan)
             return R
 
-        # flags
-        SWING = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
-        WHIFF = "StrikeSwinging"
-        BIP   = "InPlay"
-
-        # base slice
-        base = data.dropna(subset=["PlateLocSide", "PlateLocHeight"]).copy()
+        base = pitcher_data.dropna(subset=["PlateLocSide", "PlateLocHeight"]).copy()
         if base.empty:
             st.info("No data available to plot after filtering.")
             return
 
-        pts = base["PitchType"].dropna().unique().tolist()
+        # Flags
+        SWING = {"StrikeSwinging", "FoulBallFieldable", "FoulBallNotFieldable", "InPlay"}
+        WHIFF = "StrikeSwinging"
+        BIP   = "InPlay"
+
+        # Determine metric
+        key = map_type
+        val_col = None
+        cbar_label = ""
+        title_suffix_fmt = ""
+
+        if map_type == "Swing Rate":
+            key = "swing"; cbar_label = "%"; title_suffix_fmt = "Swing Rate (swings={sw}, n={n})"
+        elif map_type == "Whiff Rate":
+            key = "whiff"; cbar_label = "%"; title_suffix_fmt = "Whiff Rate (whiffs={wf}, swings={sw})"
+        elif map_type == "Exit Velocity":
+            key = "ev"; cbar_label = "mph"; title_suffix_fmt = "Exit Velocity (BIP={bip})"
+            if "ExitSpeed" not in base.columns:
+                st.info("No ExitSpeed column available for Exit Velocity heatmap.")
+                return
+            val_col = "ExitSpeed"
+        elif map_type == "wOBA":
+            key = "woba"; cbar_label = "wOBA"; title_suffix_fmt = "wOBA (n={nn})"
+            val_col = "wOBA_value" if "wOBA_value" in base.columns else ("wOBA_result" if "wOBA_result" in base.columns else None)
+            if val_col is None:
+                st.info("No wOBA_value (or wOBA_result) column available.")
+                return
+        elif map_type == "xwOBA":
+            key = "xwoba"; cbar_label = "xwOBA"; title_suffix_fmt = "xwOBA (n={nn})"
+            val_col = "xwOBA_value" if "xwOBA_value" in base.columns else ("xwOBA_result" if "xwOBA_result" in base.columns else None)
+            if val_col is None:
+                st.info("No xwOBA_value (or xwOBA_result) column available.")
+                return
+        else:
+            st.info("Unknown heatmap type.")
+            return
 
         fields = []
         vmax_pool = []
+        vmin_pool = []
 
+        pts = base["PitchType"].dropna().unique().tolist()
         for pt in pts:
             sub = base[base["PitchType"] == pt].copy()
             xs = sub["PlateLocSide"].values
             ys = sub["PlateLocHeight"].values
+            n = len(sub)
 
-            # ---- compute grid per map type ----
-            if key == "freq":
-                n = len(sub)
-                if n == 0:
-                    continue
-                den = hist2d(xs, ys)
-                H = (den / max(n, 1)) * 100.0
-                grid = _smooth(H)
-
-                title_suffix = f"Frequency (n={n})"
-                cbar_label = "%"
-
-            elif key == "swing":
+            if key == "swing":
                 if "PitchCall" not in sub.columns:
                     continue
                 swings_mask = sub["PitchCall"].isin(SWING)
-                den = hist2d(xs, ys)                          # all pitches
-                num = hist2d(xs[swings_mask], ys[swings_mask])# swings
+                den = hist2d(xs, ys)                           # pitches
+                num = hist2d(xs[swings_mask], ys[swings_mask]) # swings
                 grid = ratio_of_smooths(num, den) * 100.0
-
-                title_suffix = f"Swing Rate (swings={int(swings_mask.sum())}, n={len(sub)})"
-                cbar_label = "%"
+                title_suffix = title_suffix_fmt.format(sw=int(swings_mask.sum()), n=n)
 
             elif key == "whiff":
                 if "PitchCall" not in sub.columns:
                     continue
                 swings_mask = sub["PitchCall"].isin(SWING)
                 whiff_mask  = sub["PitchCall"].eq(WHIFF)
-                den = hist2d(xs[swings_mask], ys[swings_mask])  # swings
-                num = hist2d(xs[whiff_mask],  ys[whiff_mask])   # whiffs
+                den = hist2d(xs[swings_mask], ys[swings_mask]) # swings
+                num = hist2d(xs[whiff_mask],  ys[whiff_mask])  # whiffs
                 grid = ratio_of_smooths(num, den) * 100.0
-
-                title_suffix = f"Whiff Rate (whiffs={int(whiff_mask.sum())}, swings={int(swings_mask.sum())})"
-                cbar_label = "%"
+                title_suffix = title_suffix_fmt.format(wf=int(whiff_mask.sum()), sw=int(swings_mask.sum()))
 
             elif key == "ev":
                 if "PitchCall" not in sub.columns:
@@ -775,13 +864,11 @@ def plot_heatmaps(map_type: str):
                 if not bip_mask.any():
                     grid = np.full((NX, NY), np.nan)
                 else:
-                    val = sub.loc[bip_mask, val_col].astype(float).values
-                    num = hist2d(xs[bip_mask], ys[bip_mask], w=val)  # sum EV
-                    den = hist2d(xs[bip_mask], ys[bip_mask])         # BIP count
-                    grid = ratio_of_smooths(num, den)                # mean EV
-
-                title_suffix = f"Exit Velocity (BIP={int(bip_mask.sum())})"
-                cbar_label = "mph"
+                    v = sub.loc[bip_mask, val_col].astype(float).values
+                    num = hist2d(xs[bip_mask], ys[bip_mask], w=v)  # sum EV
+                    den = hist2d(xs[bip_mask], ys[bip_mask])       # BIP count
+                    grid = ratio_of_smooths(num, den)              # mean EV
+                title_suffix = title_suffix_fmt.format(bip=int(bip_mask.sum()))
 
             elif key in ("woba", "xwoba"):
                 vals = sub[val_col].astype(float)
@@ -791,65 +878,49 @@ def plot_heatmaps(map_type: str):
                 else:
                     v = vals[mask].values
                     num = hist2d(xs[mask], ys[mask], w=v)  # sum metric
-                    den = hist2d(xs[mask], ys[mask])       # count with metric
-                    grid = ratio_of_smooths(num, den)      # mean metric
-
-                title_suffix = f"{map_type} (n={int(mask.sum())})"
-                cbar_label = map_type
-
+                    den = hist2d(xs[mask], ys[mask])       # count
+                    grid = ratio_of_smooths(num, den)      # mean
+                title_suffix = title_suffix_fmt.format(nn=int(mask.sum()))
             else:
                 continue
 
-            fields.append((pt, grid, title_suffix, cbar_label))
+            fields.append((pt, grid, title_suffix))
 
             finite_vals = grid[np.isfinite(grid)]
             if finite_vals.size:
                 vmax_pool.append(np.percentile(finite_vals, 97))
+                vmin_pool.append(np.percentile(finite_vals, 3))
 
         if not fields:
             st.info("Nothing to plot with the current filters.")
             return
 
-        # shared normalization
-        if key in ("freq", "swing", "whiff"):
-            vmin = 0.0
-            vmax = float(np.nanmax(vmax_pool))
-        else:
-            # EV / wOBA scales
-            vmax = float(np.nanmax(vmax_pool))
-            vmin = float(np.nanmin([
-                np.nanmin(g) for _, g, _, _ in fields if np.isfinite(g).any()
-            ]))
+        # Shared scale for non-frequency so panels are comparable
+        vmin = float(np.nanmin(vmin_pool)) if len(vmin_pool) else 0.0
+        vmax = float(np.nanmax(vmax_pool)) if len(vmax_pool) else 1.0
         norm = Normalize(vmin=vmin, vmax=max(vmin + 1e-9, vmax))
 
         # layout
-        n = len(fields)
-        rows = int(np.ceil(n / N_COLS))
-        fig, axes = plt.subplots(rows, N_COLS, figsize=(PANEL_IN * N_COLS, PANEL_IN * rows), constrained_layout=True)
+        N_COLS = 3
+        PANEL_IN = 5.5
+        n_types = len(fields)
+        n_rows = int(np.ceil(n_types / N_COLS))
+        fig, axes = plt.subplots(n_rows, N_COLS, figsize=(PANEL_IN * N_COLS, PANEL_IN * n_rows),
+                                 constrained_layout=True)
         axes = np.atleast_1d(axes).ravel()
         for ax in axes: ax.axis("off")
 
         extent = [x_edges[0], x_edges[-1], y_edges[0], y_edges[-1]]
 
-        zone_w = 1.66166
-        z_x0 = -zone_w / 2
-        z_y0 = 1.5
-        z_h  = 3.3775 - 1.5
-
-        for i, (pt, grid, title_suffix, cbar_label) in enumerate(fields):
-            ax = axes[i]
-            ax.axis("on")
-
-            im = ax.imshow(grid.T, origin="lower", extent=extent, cmap=CMAP, norm=norm,
+        for i, (pt, grid, title_suffix) in enumerate(fields):
+            ax = axes[i]; ax.axis("on")
+            im = ax.imshow(grid.T, origin="lower", extent=extent, cmap="turbo", norm=norm,
                            interpolation="bilinear", aspect="equal")
 
-            # raw points (light)
             sub = base[base["PitchType"] == pt]
             ax.scatter(sub["PlateLocSide"], sub["PlateLocHeight"], s=6, c="white", alpha=0.25, linewidths=0)
 
-            # strike zone
             ax.add_patch(patches.Rectangle((z_x0, z_y0), zone_w, z_h, edgecolor="black", facecolor="none", linewidth=2))
-
             ax.set_xlim(x_min, x_max); ax.set_ylim(y_min, y_max)
             ax.set_xticks([]); ax.set_yticks([])
             ax.set_title(f"{pt} — {title_suffix}", fontsize=11, pad=6)
