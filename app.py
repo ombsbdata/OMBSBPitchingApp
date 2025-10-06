@@ -2316,10 +2316,28 @@ with tab_biomech:
                            if pitcher_name in disp["Pitcher"].values else 0)
                 )
             with rc2:
+                # build UI options from the short labels
+                options = [short_map[c] for c in metric_cols]
+            
+                # pick defaults by prefix so it works even if units or wording vary
+                def pick_by_prefix(prefix, pool):
+                    prefix = prefix.upper().replace(" ", "")
+                    for label in pool:
+                        if label.upper().replace(" ", "").startswith(prefix):
+                            return label
+                    return None
+            
+                wanted_prefixes = ["PP", "EPP", "RM", "JH"]  # Propulsive Power, Ecc. PP, Reactive Movement, Jump Height
+                default_labels = []
+                for p in wanted_prefixes:
+                    lab = pick_by_prefix(p, options)
+                    if lab and lab not in default_labels:
+                        default_labels.append(lab)
+            
                 metrics_to_plot = st.multiselect(
                     "Metrics to include",
-                    options=[short_map[c] for c in metric_cols],
-                    default=[short_map[c] for c in ["PP[W]", "EPP[W]", "Jump Height (Flight Time) in Inches [in] ", "RM[m/s]"]]
+                    options=options,
+                    default=default_labels
                 )
 
             with rc3:
