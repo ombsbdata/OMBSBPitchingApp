@@ -924,6 +924,11 @@ def generate_batted_ball_table():
             st.info("Batted Ball Summary needs ExitSpeed, Angle, PitchCall.")
             return
 
+        # ensure numeric for the result metrics if present
+        for c in ["wOBA_result", "xwOBA_result"]:
+            if c in df.columns:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+
         def categorize_batted_type(angle):
             if pd.isna(angle):
                 return np.nan
@@ -959,6 +964,19 @@ def generate_batted_ball_table():
         counts = df.groupby("PitchType")["PitchType"].count().rename("Count").reset_index()
         agg = agg.merge(counts, on="PitchType", how="left")
 
+        # Add wOBA / xwOBA means (use all rows where the metric is non-null)
+        if "wOBA_result" in df.columns:
+            woba_by = df.groupby("PitchType")["wOBA_result"].mean().rename("wOBA").reset_index()
+            agg = agg.merge(woba_by, on="PitchType", how="left")
+        else:
+            agg["wOBA"] = np.nan
+
+        if "xwOBA_result" in df.columns:
+            xwoba_by = df.groupby("PitchType")["xwOBA_result"].mean().rename("xwOBA").reset_index()
+            agg = agg.merge(xwoba_by, on="PitchType", how="left")
+        else:
+            agg["xwOBA"] = np.nan
+
         # percentages
         with np.errstate(divide="ignore", invalid="ignore"):
             agg["GB%"] = np.where(agg["BIP"] > 0, agg["GB"] / agg["BIP"] * 100, 0.0)
@@ -975,7 +993,7 @@ def generate_batted_ball_table():
 
         agg["Contact%"] = agg["PitchType"].map(lambda pt: contact_pct(df[df["PitchType"] == pt]))
 
-        # all row
+        # "All" row
         all_row = {
             "PitchType": "All",
             "Count": len(df),
@@ -983,17 +1001,28 @@ def generate_batted_ball_table():
             "EV": bip["ExitSpeed"].mean() if len(bip) else 0.0,
             "GB%": (bip["BattedType"].eq("GroundBall").mean() * 100) if len(bip) else 0.0,
             "FB%": (bip["BattedType"].eq("FlyBall").mean() * 100) if len(bip) else 0.0,
-            "Hard%": (bip["ExitSpeed"].ge(95).mean() * 100) if len(bip) else 0.0,
-            "Soft%": (bip["ExitSpeed"].lt(95).mean() * 100) if len(bip) else 0.0,
+            "Hard%": (bip["ExitSpeed"].ge(95).mean() * 100) if ("ExitSpeed" in bip.columns and len(bip)) else 0.0,
+            "Soft%": (bip["ExitSpeed"].lt(95).mean() * 100) if ("ExitSpeed" in bip.columns and len(bip)) else 0.0,
             "Contact%": contact_pct(df),
+            "wOBA": df["wOBA_result"].mean() if "wOBA_result" in df.columns else np.nan,
+            "xwOBA": df["xwOBA_result"].mean() if "xwOBA_result" in df.columns else np.nan,
         }
         agg = pd.concat([agg, pd.DataFrame([all_row])], ignore_index=True)
 
-        display = agg.drop(columns=["GB","FB","Hard","Soft"], errors="ignore").rename(columns={"PitchType":"Pitch"})
+        # tidy display (keep your existing drops) + add wOBA columns at the end
+        display = (agg
+                   .drop(columns=["GB","FB","Hard","Soft"], errors="ignore")
+                   .rename(columns={"PitchType":"Pitch"}))
+
+        # Reorder so wOBA/xwOBA appear at the end
+        end_cols = ["wOBA", "xwOBA"]
+        cols = [c for c in display.columns if c not in end_cols] + [c for c in end_cols if c in display.columns]
+
         st.subheader("Batted Ball Summary")
-        st.dataframe(format_dataframe(display))
+        st.dataframe(format_dataframe(display[cols]))
     except Exception as e:
         st.error(f"Error generating batted ball table: {e}")
+
 
 def plot_pitch_movement():
     try:
