@@ -2082,7 +2082,7 @@ with tab_biomech:
     
     @st.cache_data(show_spinner=False)
     def load_vald_df():
-        # Look in common places
+        # common locations
         cand = ["/mnt/data/VALD_Master.csv", "data/vald/VALD_Master.csv", "VALD_Master.csv"]
         path = next((p for p in cand if os.path.exists(p)), None)
         if not path:
@@ -2091,47 +2091,57 @@ with tab_biomech:
         df = pd.read_csv(path)
         df.columns = [str(c).strip() for c in df.columns]
     
-        # ---- detect key columns ----
-        name_col = next((c for c in df.columns if c.lower() in ("name_lastfirst","name","player","athlete")), None)
+        # ---- NAME (prefer Name_LastFirst; fallback to Name) ----
+        name_col = "Name_LastFirst" if "Name_LastFirst" in df.columns else (
+            "Name" if "Name" in df.columns else None
+        )
         if not name_col:
             return pd.DataFrame(), None, None, None
     
-        date_col = next((c for c in df.columns if c.lower() in ("date","test_date","datetime","timestamp")), None)
-        if date_col:
-            df[date_col] = pd.to_datetime(df[date_col], errors="coerce")
-            df = df[df[date_col].notna()].copy()
+        # ---- DATETIME (combine Date + Time if present) ----
+        # create a single datetime column VALD_DateTime and also a date-only VALD_Date
+        if "Date" in df.columns and "Time" in df.columns:
+            dt_raw = df["Date"].astype(str).str.strip() + " " + df["Time"].astype(str).str.strip()
+            dt = pd.to_datetime(dt_raw, errors="coerce", infer_datetime_format=True)
+        elif "Date" in df.columns:
+            dt = pd.to_datetime(df["Date"], errors="coerce", infer_datetime_format=True)
         else:
-            df["Date"] = pd.NaT
-            date_col = "Date"
+            dt = pd.NaT
     
-        # Optional F/P column
-        def detect_fp_col(cols, dframe):
-            cands = [c for c in cols if c.lower() in ("f/p","fp","freshpost","band","session","condition")]
-            if cands:
-                return cands[0]
-            for c in cols:
-                vals = dframe[c].dropna().astype(str).str.strip().str.lower().unique()
-                if len(vals) and set(vals).issubset({"f","p","fresh","post"}):
-                    return c
-            return None
+        df["VALD_DateTime"] = dt
+        df["VALD_Date"] = pd.to_datetime(df["VALD_DateTime"]).dt.date
+        df = df[df["VALD_DateTime"].notna()].copy()
     
-        fp_col = detect_fp_col(df.columns, df)
-        if fp_col:
-            df[fp_col] = df[fp_col].astype(str).str.strip()
+        # ---- FRESH/POST detection & normalization ----
+        # 1) Start with FP_Tag (P/F), map to Fresh/Post
+        def _map_fp(x: str):
+            s = str(x or "").strip().lower()
+            if s in ("f", "fresh"): return "Fresh"
+            if s in ("p", "post"):  return "Post"
+            return np.nan
     
-        # ---- robust dual keys for matching ----
+        df["FP_Tag_clean"] = np.nan
+        if "FP_Tag" in df.columns:
+            df["FP_Tag_clean"] = df["FP_Tag"].map(_map_fp)
+    
+        # 2) If still missing, try Tags column (Fresh/Post strings)
+        if "Tags" in df.columns:
+            tags_norm = df["Tags"].astype(str).str.strip().str.lower()
+            df.loc[df["FP_Tag_clean"].isna() & tags_norm.eq("fresh"), "FP_Tag_clean"] = "Fresh"
+            df.loc[df["FP_Tag_clean"].isna() & tags_norm.eq("post"),  "FP_Tag_clean"] = "Post"
+    
+        # If nothing found, leave NaN (UI lets you choose "Both" anyway)
+    
+        # ---- robust dual keys for matching to season_df ----
         import re
         SUFFIXES = {"jr","sr","ii","iii","iv","v"}
-    
         def _letters_only(s: str) -> str:
             return re.sub(r"[^A-Za-z]", "", s or "").lower()
-    
         def _strip_suffix_token(tok: str) -> bool:
             w = re.sub(r"[^\w]", "", (tok or "")).lower()
             return w in SUFFIXES
     
         def key_last_first(name: str) -> str:
-            """Normalize 'Last, First [Middle] [Suffix]' → 'lastfirst' (letters only)."""
             s = str(name or "").strip()
             if "," in s:
                 last, first = [p.strip() for p in s.split(",", 1)]
@@ -2141,17 +2151,15 @@ with tab_biomech:
                     last, first = parts[0], " ".join(parts[1:])
                 else:
                     last, first = s, ""
-            last_parts  = [p for p in last.split()  if not _strip_suffix_token(p)]
-            first_parts = [p for p in first.split() if not _strip_suffix_token(p)]
-            return _letters_only("".join(last_parts) + "".join(first_parts))
+            lp = [p for p in last.split()  if not _strip_suffix_token(p)]
+            fp = [p for p in first.split() if not _strip_suffix_token(p)]
+            return _letters_only("".join(lp) + "".join(fp))
     
         def key_first_last(name: str) -> str:
-            """Normalize 'First [Middle] Last [Suffix]' → 'lastfirst' (letters only)."""
             s = str(name or "").strip().replace(",", " ")
             parts = [p for p in s.split() if not _strip_suffix_token(p)]
             if len(parts) >= 2:
-                last = parts[-1]
-                first = " ".join(parts[:-1])
+                last = parts[-1]; first = " ".join(parts[:-1])
             else:
                 last, first = s, ""
             return _letters_only(last + first)
@@ -2160,9 +2168,19 @@ with tab_biomech:
         df["Key_LF"] = df["VALD_Player"].apply(key_last_first)
         df["Key_FL"] = df["VALD_Player"].apply(key_first_last)
     
-        return df, name_col, date_col, fp_col
+        # Make common metric columns numeric (safe convert)
+        for c in df.columns:
+            if c in (name_col, "VALD_Player", "Key_LF", "Key_FL", "VALD_DateTime", "VALD_Date", "FP_Tag_clean"):
+                continue
+            df[c] = pd.to_numeric(df[c], errors="ignore")
     
+        # tell caller which columns to use
+        vald_date_col = "VALD_DateTime"     # used by tables + charts
+        vald_fp_col   = "FP_Tag_clean"      # used for filtering + line_dash
+        return df, name_col, vald_date_col, vald_fp_col
     
+        
+        
     vald_df, vald_name_col, vald_date_col, vald_fp_col = load_vald_df()
     
     if vald_df is None or vald_df.empty:
