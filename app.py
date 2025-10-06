@@ -1494,7 +1494,7 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
             st.info("No data for the selected pitcher.")
             return
 
-        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "Extension", "StuffPlus"]:
+        for c in ["RelSpeed", "InducedVertBreak", "HorzBreak", "SpinRate", "Extension", "StuffPlus", "RelHeight", "RelSide"]:
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
         df = _ensure_date(df, "Date")
@@ -1509,6 +1509,8 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
             ("HorzBreak", "HB"),
             ("SpinRate", "Spin"),
             ("Extension", "Extension"),
+            ("RelHeight", "RelH"),   # <-- add
+            ("RelSide", "RelS"),     # <-- add
         ]
         if "StuffPlus" in df.columns:
             metrics.append(("StuffPlus", "StuffPlus"))
