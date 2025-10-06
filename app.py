@@ -932,15 +932,11 @@ def generate_batted_ball_table():
         def categorize_batted_type(angle):
             if pd.isna(angle):
                 return np.nan
-            angle = float(angle)
-            if angle < 10:
-                return "GroundBall"
-            elif 10 <= angle < 25:
-                return "LineDrive"
-            elif 25 <= angle < 50:
-                return "FlyBall"
-            else:
-                return "PopUp"
+            a = float(angle)
+            if a < 10: return "GroundBall"
+            if a < 25: return "LineDrive"
+            if a < 50: return "FlyBall"
+            return "PopUp"
 
         df["BattedType"] = df["Angle"].apply(categorize_batted_type)
         bip = df[df["PitchCall"] == "InPlay"]
@@ -977,6 +973,12 @@ def generate_batted_ball_table():
         else:
             agg["xwOBA"] = np.nan
 
+        # === ROUNDING FIX (do this right after computing/merging) ===
+        if "wOBA" in agg.columns:
+            agg["wOBA"] = agg["wOBA"].round(3)
+        if "xwOBA" in agg.columns:
+            agg["xwOBA"] = agg["xwOBA"].round(3)
+
         # percentages
         with np.errstate(divide="ignore", invalid="ignore"):
             agg["GB%"] = np.where(agg["BIP"] > 0, agg["GB"] / agg["BIP"] * 100, 0.0)
@@ -993,7 +995,7 @@ def generate_batted_ball_table():
 
         agg["Contact%"] = agg["PitchType"].map(lambda pt: contact_pct(df[df["PitchType"] == pt]))
 
-        # "All" row
+        # "All" row (round here too)
         all_row = {
             "PitchType": "All",
             "Count": len(df),
@@ -1004,19 +1006,23 @@ def generate_batted_ball_table():
             "Hard%": (bip["ExitSpeed"].ge(95).mean() * 100) if ("ExitSpeed" in bip.columns and len(bip)) else 0.0,
             "Soft%": (bip["ExitSpeed"].lt(95).mean() * 100) if ("ExitSpeed" in bip.columns and len(bip)) else 0.0,
             "Contact%": contact_pct(df),
-            "wOBA": df["wOBA_result"].mean() if "wOBA_result" in df.columns else np.nan,
-            "xwOBA": df["xwOBA_result"].mean() if "xwOBA_result" in df.columns else np.nan,
+            "wOBA": round(df["wOBA_result"].mean(), 3) if "wOBA_result" in df.columns else np.nan,
+            "xwOBA": round(df["xwOBA_result"].mean(), 3) if "xwOBA_result" in df.columns else np.nan,
         }
         agg = pd.concat([agg, pd.DataFrame([all_row])], ignore_index=True)
 
-        # tidy display (keep your existing drops) + add wOBA columns at the end
+        # tidy display + put wOBA/xwOBA at the end
         display = (agg
                    .drop(columns=["GB","FB","Hard","Soft"], errors="ignore")
                    .rename(columns={"PitchType":"Pitch"}))
 
-        # Reorder so wOBA/xwOBA appear at the end
         end_cols = ["wOBA", "xwOBA"]
         cols = [c for c in display.columns if c not in end_cols] + [c for c in end_cols if c in display.columns]
+
+        # OPTIONAL: force fixed 3-decimal text (e.g., 0.340 not 0.34)
+        # for c in ["wOBA", "xwOBA"]:
+        #     if c in display.columns:
+        #         display[c] = display[c].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "")
 
         st.subheader("Batted Ball Summary")
         st.dataframe(format_dataframe(display[cols]))
