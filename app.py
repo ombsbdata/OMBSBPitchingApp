@@ -1188,6 +1188,13 @@ def generate_batted_ball_table():
         #         display[c] = display[c].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "")
 
         st.subheader("Batted Ball Summary")
+        # right before st.dataframe(...)
+        styler = display[cols].style.format({
+            "wOBA": "{:.3f}",
+            "xwOBA": "{:.3f}"
+        })
+        st.dataframe(styler)
+
         st.dataframe(format_dataframe(display[cols]))
     except Exception as e:
         st.error(f"Error generating batted ball table: {e}")
