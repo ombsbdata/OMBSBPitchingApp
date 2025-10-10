@@ -1183,7 +1183,7 @@ def generate_batted_ball_table():
         cols = [c for c in display.columns if c not in end_cols] + [c for c in end_cols if c in display.columns]
 
         # OPTIONAL: force fixed 3-decimal text (e.g., 0.340 not 0.34)
-         for c in ["wOBA", "xwOBA"]:
+        for c in ["wOBA", "xwOBA"]:
              if c in display.columns:
                  display[c] = display[c].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "")
 
