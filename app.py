@@ -1433,6 +1433,12 @@ def generate_by_date_overall_table():
         out = pd.DataFrame(rows).sort_values("Date")
         out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
 
+
+                # Format wOBA and xwOBA to 3 decimal places
+        for col in ["wOBA_result", "xwOBA_result"]:
+            if col in df.columns:
+                df[col] = df[col].apply(lambda x: f"{x:.3f}" if pd.notnull(x) else "")
+
         st.subheader("By-Date (Overall) — Pitch Flight Data")
         cols = ["Date","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%","wOBA","xwOBA"]
         st.dataframe(format_dataframe(out[cols]), use_container_width=True, hide_index=True)
