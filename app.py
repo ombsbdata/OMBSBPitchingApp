@@ -1402,6 +1402,10 @@ def generate_by_date_overall_table():
             # Stuff+ mean (use all pitches that day; fallback safe)
             stuff_mean = float(day["StuffPlus"].mean()) if "StuffPlus" in day.columns and day["StuffPlus"].notna().any() else np.nan
 
+            #woba and xwOBA mean
+            woba_mean = float(day["wOBA_result"].mean()) if "wOBA_result" in day.columns and day ["wOBA_result"].notna().any() else np.nan
+            xwoba_mean = float(day["xwOBA_result"].mean()) if "xwOBA_result" in day.columns and day ["xwOBA_result"].notna().any() else np.nan
+
             rows.append({
                 "Date": d,
                 "Pitches": int(total),
@@ -1418,6 +1422,8 @@ def generate_by_date_overall_table():
                 "FB%": fb_pct,
                 "Soft%": soft_pct,
                 "Hard%": hard_pct,
+                "wOBA": round(woba_mean, 3) if pd.notna(woba_mean) else np.nan,
+                "xwOBA": round(woba_mean, 3) if pd.notna(xwoba_mean) else np.nan,
             })
 
         if not rows:
@@ -1428,7 +1434,7 @@ def generate_by_date_overall_table():
         out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
 
         st.subheader("By-Date (Overall) — Pitch Flight Data")
-        cols = ["Date","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%"]
+        cols = ["Date","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%","wOBA","xwOBA"]
         st.dataframe(format_dataframe(out[cols]), use_container_width=True, hide_index=True)
 
     except Exception as e:
