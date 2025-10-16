@@ -370,17 +370,58 @@ def load_biomech_workbook() -> pd.DataFrame:
 st.title("Pitcher Reports (2025 Season)")
 st.sidebar.header("Filters")
 
+# ---- Sidebar: Game Type (multi-select) ----
 st.sidebar.subheader("Game Type")
-game_type_choice = st.sidebar.selectbox(
-    "Show pitches from:",
-    ["All", "LBP", "IS", "FallGame"],
-    index=0,
-    help="Filters the pitching data by the 'game_type' column if present."
+
+def _game_types_in(df: pd.DataFrame) -> list[str]:
+    if df is None or df.empty or "game_type" not in df.columns:
+        return []
+    vals = (
+        df["game_type"]
+        .astype(str).str.strip()
+        .replace({"nan": None})
+        .dropna()
+        .unique()
+        .tolist()
+    )
+    # keep a preferred ordering if present
+    preferred = ["LBP", "IS", "FallGame"]
+    ordered = [g for g in preferred if g in vals] + [g for g in vals if g not in preferred]
+    return ordered
+
+# collect options from both frames so nothing disappears if only one has a value
+_all_types = sorted(set(_game_types_in(season_df)) | set(_game_types_in(rolling_df)))
+
+# Default to IS + FallGame (omit LBP). If none detected, show all.
+_default_types = [t for t in _all_types if t in {"IS", "FallGame"}] or _all_types
+
+game_type_choices = st.sidebar.multiselect(
+    "Show pitches from (leave empty for All):",
+    options=_all_types,
+    default=_default_types,
+    help="Filters by 'game_type'. Select multiple. Leave empty to show all."
 )
 
-# Now apply the filter using the chosen value
-season_df  = _apply_game_type_filter(season_df,  game_type_choice)
-rolling_df = _apply_game_type_filter(rolling_df, game_type_choice)
+def _apply_game_type_filter_multi(df: pd.DataFrame, choices: list[str]) -> pd.DataFrame:
+    """
+    If 'choices' is empty or 'game_type' column missing, returns df unchanged.
+    Else keeps rows where game_type is in choices.
+    """
+    if df is None or df.empty:
+        return df
+    if "game_type" not in df.columns:
+        return df
+    if not choices:  # treat empty selection as "All"
+        return df
+
+    norms = set(str(s).strip() for s in choices)
+    col = df["game_type"].astype(str).str.strip()
+    return df.loc[col.isin(norms)].copy()
+
+
+season_df  = _apply_game_type_filter_multi(season_df,  game_type_choices)
+rolling_df = _apply_game_type_filter_multi(rolling_df, game_type_choices)
+
 
 
 
