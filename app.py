@@ -1963,6 +1963,7 @@ def render_rolling_average_charts_tab():
         st.error(f"Error in Rolling Average Charts: {e}")
 
 
+from datetime import datetime, timedelta
 
 
 
@@ -1990,6 +1991,50 @@ with tab_biomech:
     if df_src.empty:
         st.info("No data available.")
         st.stop()
+
+
+        # --- Warm-up Pitches: load from Google Sheets (cached) ---
+    @st.cache_data(show_spinner=False)
+    def load_warmups_from_sheet(sheet_url: str) -> pd.DataFrame:
+        """
+        Reads a public Google Sheet with columns: Date, Pitcher, Count.
+        Returns a DataFrame with columns: Pitcher (str), DateOnly (date), WU (int).
+        """
+        try:
+            # Convert a normal "edit" URL to a CSV export URL
+            # e.g., https://docs.google.com/spreadsheets/d/<ID>/export?format=csv
+            if "/edit" in sheet_url:
+                base = sheet_url.split("/edit", 1)[0]
+                csv_url = base + "/export?format=csv"
+            elif "/view" in sheet_url:
+                base = sheet_url.split("/view", 1)[0]
+                csv_url = base + "/export?format=csv"
+            else:
+                # if it's already an export or ends with the ID, try appending export
+                csv_url = sheet_url.rstrip("/") + "/export?format=csv"
+    
+            wu = pd.read_csv(csv_url)
+        except Exception:
+            # Fallback: let user upload a CSV with same columns if the URL isn't public
+            wu = pd.DataFrame(columns=["Date", "Pitcher", "Count"])
+    
+        # Normalize columns
+        cmap = {c.lower().strip(): c for c in wu.columns}
+        need = {"date", "pitcher", "count"}
+        if not need.issubset(set(cmap.keys())):
+            return pd.DataFrame(columns=["Pitcher", "DateOnly", "WU"])
+    
+        wu = wu.rename(columns={cmap["date"]: "Date",
+                                cmap["pitcher"]: "Pitcher",
+                                cmap["count"]: "Count"})
+        wu["DateOnly"] = pd.to_datetime(wu["Date"], errors="coerce").dt.date
+        wu["Pitcher"]  = wu["Pitcher"].astype(str).str.strip()
+        wu["WU"]       = pd.to_numeric(wu["Count"], errors="coerce").fillna(0).astype(int)
+    
+        # Aggregate in case there are multiple rows per pitcher/date
+        wu = (wu.groupby(["Pitcher", "DateOnly"], as_index=False)["WU"].sum())
+        return wu[["Pitcher", "DateOnly", "WU"]]
+
 
     df_src = _ensure_date(df_src, "Date")
 
@@ -2029,6 +2074,11 @@ with tab_biomech:
     end_date = st.session_state.wl_end_date
     start_date = end_date - timedelta(days=int(days_back) - 1)
     date_index = pd.date_range(start=start_date, end=end_date, freq="D")
+    
+    # Warm-up data (Google Sheet)
+    WARMUP_SHEET_URL = "https://docs.google.com/spreadsheets/d/1xa9GUjw3SJ0GMU61ZMWLlp7mM4SY6BRqCVjVRoa80AE/edit?usp=sharing"
+    warmups_df = load_warmups_from_sheet(WARMUP_SHEET_URL)
+
 
     mask = (df_src["PitcherTeam"] == team_sel) & (df_src["Date"].dt.date.between(start_date, end_date))
     df = df_src.loc[mask].copy()
@@ -2084,6 +2134,20 @@ with tab_biomech:
                            "TotalP": tot_p.reindex(pitchers).fillna(0).astype(int).values,
                            "TotalIP": tot_outs.apply(outs_to_ip_str).reindex(pitchers).fillna("0.0").values})
 
+        # Ensure warmups are limited to the window + pitchers in scope
+    if warmups_df is not None and not warmups_df.empty:
+        wu_masked = warmups_df[
+            (warmups_df["DateOnly"].between(start_date, end_date)) &
+            (warmups_df["Pitcher"].isin(pitchers))
+        ].copy()
+    else:
+        wu_masked = pd.DataFrame(columns=["Pitcher", "DateOnly", "WU"])
+    
+    # Merge WU into the daily grid (default 0)
+    daily = daily.merge(wu_masked, on=["Pitcher", "DateOnly"], how="left")
+    daily["WU"] = daily["WU"].fillna(0).astype(int)
+
+
     # -----------------------
     # EOW (End of Week) after each Sunday
     # -----------------------
@@ -2111,21 +2175,23 @@ with tab_biomech:
     # Render HTML table
     # -----------------------
     from collections import OrderedDict
-    # month spans need to include both day and eow columns
+    
+    # month spans need to include all subcolumns:
+    # - day: P, IP, WU (3)
+    # - eow: P, IP (2)
     month_spans = OrderedDict()
     for kind, d in col_seq:
         key = pd.Timestamp(d).strftime("%B %Y")
         month_spans.setdefault(key, 0)
-        month_spans[key] += 2  # each entry contributes 2 columns (P, IP)
-
+        month_spans[key] += (3 if kind == "day" else 2)
+    
     def dow(d): return pd.Timestamp(d).strftime("%a")
-
-    # ===== Appearance (tweak here) =====
+    
+    # ===== Appearance additions =====
     name_col_width = 180
     tot_col_width  = 96
-    day_cell_w     = 32    # << narrower P/IP cells
+    day_cell_w     = 32
     row_h          = 28
-
     highlight_name = (pitcher_name or "").strip().lower()
 
     styles = f"""
@@ -2176,6 +2242,11 @@ with tab_biomech:
       /* EOW styling */
       thead .eow-head {{ background: #fff0e6; }}
       tbody td.eow    {{ background: #fff7f0; font-weight: 600; }}
+
+        /* Warm-up styling */
+      thead .wu-head {{ background: #efeaff; }}
+      tbody td.wu     {{ background: #f7f3ff; font-weight: 600; font-size: 11px; }}
+
     
       tbody tr:nth-child(even) {{ background: #fcfcfc; }}
       tbody tr.hl {{ background: #fff7cc !important; font-weight: 700; }}
@@ -2184,6 +2255,8 @@ with tab_biomech:
       .name  {{ width: {name_col_width}px; min-width: {name_col_width}px; max-width: {name_col_width}px; }}
       .totcol{{ width: {tot_col_width}px;  min-width: {tot_col_width}px;  max-width: {tot_col_width}px;  }}
       .daycol{{ width: {day_cell_w}px;     min-width: {day_cell_w}px;     max-width: {day_cell_w}px;     }}
+
+      
     </style>
     """
 
@@ -2195,35 +2268,32 @@ with tab_biomech:
         f"<th class='sticky-left-2 tot-head totcol' rowspan='3' title='Total pitches in window'>Total P ({int(days_back)}d)</th>"
         f"<th class='sticky-left-3 tot-head totcol' rowspan='3' title='Total innings pitched in window'>Total IP ({int(days_back)}d)</th>"
     )
-
     for mon, span in month_spans.items():
         h1 += f"<th colspan='{span}'>{mon}</th>"
     h1 += "</tr>"
-
+    
+    # Row 2: per-day/EOW headers
     h2 = "<tr>"
     for kind, d in col_seq:
         if kind == "day":
-            h2 += f"<th colspan='2'>{pd.Timestamp(d).day}<br>{dow(d)}</th>"
+            h2 += f"<th colspan='3'>{pd.Timestamp(d).day}<br>{dow(d)}</th>"
         else:
-            # End of Week label (after Sun)
             h2 += f"<th class='eow-head' colspan='2' title='Totals Mon–Sun ending {d}'>EOW<br>{pd.Timestamp(d).strftime('%b %d')}</th>"
     h2 += "</tr>"
-
+    
+    # Row 3: subheaders (P, IP, WU for days; P, IP for EOW)
     h3 = "<tr>"
     for kind, _ in col_seq:
         if kind == "day":
-            h3 += "<th>P</th><th>IP</th>"
+            h3 += "<th>P</th><th>IP</th><th class='wu-head' title='Warm-up pitches (not in totals/EOW)'>WU</th>"
         else:
             h3 += "<th class='eow-head'>P</th><th class='eow-head'>IP</th>"
     h3 += "</tr>"
 
-    # mapping for quick daily lookups
-    daily_key = {(r["Pitcher"], r["DateOnly"]): (int(r["P"]), r["IP"]) for _, r in daily.iterrows()}
-
-    # order rows by TotalP desc
-    totals_sorted = totals.sort_values(["TotalP", "Pitcher"], ascending=[False, True])
-
-    # Body rows
+    # mapping for quick daily lookups (now includes WU)
+    daily_key = {(r["Pitcher"], r["DateOnly"]): (int(r["P"]), r["IP"], int(r["WU"])) for _, r in daily.iterrows()}
+    
+    # Body rows (unchanged order/sorting)
     body_rows = []
     for _, rr in totals_sorted.iterrows():
         p_name = rr["Pitcher"]
@@ -2232,18 +2302,20 @@ with tab_biomech:
         tr += f"<td class='name sticky-left'>{p_name}</td>"
         tr += f"<td class='tot sticky-left-2 totcol'>{int(rr['TotalP'])}</td>"
         tr += f"<td class='tot sticky-left-3 totcol'>{rr['TotalIP']}</td>"
-
+    
         for kind, d in col_seq:
             if kind == "day":
-                P, IP = daily_key.get((p_name, d), (0, ""))
+                P, IP, WU = daily_key.get((p_name, d), (0, "", 0))
                 tr += f"<td class='daycol'>{P if P>0 else ''}</td>"
                 tr += f"<td class='daycol'>{IP}</td>"
+                tr += f"<td class='daycol wu'>{WU if WU>0 else ''}</td>"
             else:
                 P_week, Outs_week = eow_vals.get((p_name, d), (0, 0))
                 tr += f"<td class='daycol eow'>{P_week if P_week>0 else ''}</td>"
                 tr += f"<td class='daycol eow'>{outs_to_ip_str(Outs_week) if Outs_week>0 else ''}</td>"
         tr += "</tr>"
         body_rows.append(tr)
+    
 
     table_html = styles + "<div class='scroll-x'><table class='workload'>"
     table_html += f"<thead>{h1}{h2}{h3}</thead><tbody>{''.join(body_rows)}</tbody></table></div>"
