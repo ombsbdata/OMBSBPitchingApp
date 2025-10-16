@@ -2134,6 +2134,8 @@ with tab_biomech:
                            "TotalP": tot_p.reindex(pitchers).fillna(0).astype(int).values,
                            "TotalIP": tot_outs.apply(outs_to_ip_str).reindex(pitchers).fillna("0.0").values})
 
+    totals_sorted = totals.sort_values(["TotalP", "Pitcher"], ascending=[False, True])
+
         # Ensure warmups are limited to the window + pitchers in scope
     if warmups_df is not None and not warmups_df.empty:
         wu_masked = warmups_df[
