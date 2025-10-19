@@ -1472,7 +1472,7 @@ def generate_by_date_overall_table():
                 "Soft%": soft_pct,
                 "Hard%": hard_pct,
                 "wOBA": round(woba_mean, 3) if pd.notna(woba_mean) else np.nan,
-                "xwOBA": round(woba_mean, 3) if pd.notna(xwoba_mean) else np.nan,
+                "xwOBA": round(xwoba_mean, 3) if pd.notna(xwoba_mean) else np.nan,
             })
 
         if not rows:
@@ -1483,10 +1483,10 @@ def generate_by_date_overall_table():
         out["Date"] = pd.to_datetime(out["Date"]).dt.strftime("%Y-%m-%d")
 
 
-                # Format wOBA and xwOBA to 3 decimal places
-        for col in ["wOBA_result", "xwOBA_result"]:
-            if col in df.columns:
-                df[col] = df[col].apply(lambda x: f"{x:.3f}" if pd.notnull(x) else "")
+        # Format wOBA/xwOBA for display as 0.000 (not 0.0)
+        for col in ["wOBA", "xwOBA"]:
+            if col in out.columns:
+                out[col] = out[col].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "0.000")
 
         st.subheader("By-Date (Overall) — Pitch Flight Data")
         cols = ["Date","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%","wOBA","xwOBA"]
