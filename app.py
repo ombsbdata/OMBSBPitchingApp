@@ -1443,9 +1443,17 @@ def generate_by_date_overall_table():
             # Stuff+ mean (use all pitches that day; fallback safe)
             stuff_mean = float(day["StuffPlus"].mean()) if "StuffPlus" in day.columns and day["StuffPlus"].notna().any() else np.nan
 
-            #woba and xwOBA mean
-            woba_mean = float(day["wOBA_result"].mean()) if "wOBA_result" in day.columns and day ["wOBA_result"].notna().any() else np.nan
-            xwoba_mean = float(day["xwOBA_result"].mean()) if "xwOBA_result" in day.columns and day ["xwOBA_result"].notna().any() else np.nan
+            # --- PA-aware daily wOBA/xwOBA ---
+            # A PA ends on: InPlay, HBP, Walk, Strikeout (when those columns exist)
+            pa_mask = (
+                day["PitchCall"].isin(["InPlay", "HitByPitch"])
+                | (day["KorBB"].isin(["Walk", "Strikeout"]) if "KorBB" in day.columns else False)
+            )
+            pa_n = int(pa_mask.sum())
+            
+            woba_mean = float(day["wOBA_result"].sum() / pa_n) if ("wOBA_result" in day.columns and pa_n > 0) else np.nan
+            xwoba_mean = float(day["xwOBA_result"].sum() / pa_n) if ("xwOBA_result" in day.columns and pa_n > 0) else np.nan
+
 
             rows.append({
                 "Date": d,
