@@ -1198,6 +1198,16 @@ def generate_batted_ball_table():
             return (contact / swings * 100) if swings else 0.0
 
         agg["Contact%"] = agg["PitchType"].map(lambda pt: contact_pct(df[df["PitchType"] == pt]))
+        # --- PA-aware daily wOBA/xwOBA ---
+        # A PA ends on: InPlay, HBP, Walk, Strikeout (when those columns exist)
+        pa_mask = (
+            day["PitchCall"].isin(["InPlay", "HitByPitch"])
+            | (day["KorBB"].isin(["Walk", "Strikeout"]) if "KorBB" in day.columns else False)
+        )
+        pa_n = int(pa_mask.sum())
+            
+        woba_mean = float(day["wOBA_result"].sum() / pa_n) if ("wOBA_result" in day.columns and pa_n > 0) else np.nan
+        xwoba_mean = float(day["xwOBA_result"].sum() / pa_n) if ("xwOBA_result" in day.columns and pa_n > 0) else np.nan
 
         # "All" row (round here too)
         all_row = {
@@ -1210,8 +1220,8 @@ def generate_batted_ball_table():
             "Hard%": (bip["ExitSpeed"].ge(95).mean() * 100) if ("ExitSpeed" in bip.columns and len(bip)) else 0.0,
             "Soft%": (bip["ExitSpeed"].lt(95).mean() * 100) if ("ExitSpeed" in bip.columns and len(bip)) else 0.0,
             "Contact%": contact_pct(df),
-            "wOBA": round(df["wOBA_result"].mean(), 3) if "wOBA_result" in df.columns else np.nan,
-            "xwOBA": round(df["xwOBA_result"].mean(), 3) if "xwOBA_result" in df.columns else np.nan,
+            "wOBA": round(woba_mean, 3) if pd.notna(woba_mean) else np.nan,
+            "xwOBA": round(xwoba_mean, 3) if pd.notna(xwoba_mean) else np.nan,
         }
         agg = pd.concat([agg, pd.DataFrame([all_row])], ignore_index=True)
 
