@@ -2771,9 +2771,9 @@ def _build_pitcher_leaderboard_df(source_df: pd.DataFrame, pitch_types: list | N
 
     # Filter to selected pitch types (unless All or None)
     if pitch_types and "All" not in pitch_types:
-        df = df[df["PitchType"].isin(pitch_types)].copy()
+        if "PitchType" in df.columns:
+            df = df[df["PitchType"].isin(pitch_types)].copy()
 
-    # Guards
     if df.empty:
         return pd.DataFrame()
 
@@ -2817,11 +2817,24 @@ def _build_pitcher_leaderboard_df(source_df: pd.DataFrame, pitch_types: list | N
     df["FB_flag"] = df["BIP_flag"] & (df["Angle"].between(25, 50, inclusive="left"))
     df["PU_flag"] = df["BIP_flag"] & (df["Angle"] > 50)
 
-    term_mask = _terminal_mask(df)
+    # First pitch flags: precompute as columns (no Series inside agg)
+    df["FPSw_flag"] = (df["Balls"].eq(0) & df["Strikes"].eq(0) & df["swing_flag"]).astype(int)
+    df["FirstPitch_flag"] = (df["Balls"].eq(0) & df["Strikes"].eq(0)).astype(int)
 
-    # Grouping (Pitcher leaderboard, default team OLE_REB enforced upstream)
+    # Terminal (PA-ending) mask + terminal sums as columns
+    term_mask = _terminal_mask(df)
+    df["PA_term_flag"] = term_mask.astype(int)
+    # Ensure we have result cols
+    if "wOBA_result" not in df.columns:
+        df["wOBA_result"] = 0.0
+    if "xwOBA_result" not in df.columns:
+        df["xwOBA_result"] = 0.0
+    df["wOBA_term"]  = np.where(term_mask & df["wOBA_result"].notna(),  df["wOBA_result"], 0.0)
+    df["xwOBA_term"] = np.where(term_mask & df["xwOBA_result"].notna(), df["xwOBA_result"], 0.0)
+
+    # Grouping
     group_cols = ["Pitcher", "PitcherTeam"]
-    ev_df = df[df["BIP_flag"] & (df.get("TaggedHitType","").ne("Bunt"))]  # EV only on non-bunt BIP
+    ev_df = df[df["BIP_flag"] & (df.get("TaggedHitType", pd.Series("", index=df.index)).ne("Bunt"))]
 
     stats = df.groupby(group_cols).agg(
         PA=("PA_flag","sum"),
@@ -2846,24 +2859,29 @@ def _build_pitcher_leaderboard_df(source_df: pd.DataFrame, pitch_types: list | N
         ZoneSwings=("zone_swing_flag","sum"),
         ZonePitches=("zone_flag","sum"),
         OZonePitches=("OZone_flag","sum"),
-        FPSw=((df["Balls"].eq(0) & df["Strikes"].eq(0) & df["swing_flag"]).astype(int),"sum"),
-        FirstPitchTotal=((df["Balls"].eq(0) & df["Strikes"].eq(0)).astype(int),"sum"),
+        FPSw=("FPSw_flag","sum"),
+        FirstPitchTotal=("FirstPitch_flag","sum"),
         HardHits=("hard_flag","sum"),
         GB=("GB_flag","sum"),
         LD=("LD_flag","sum"),
         FB=("FB_flag","sum"),
         PU=("PU_flag","sum"),
-        # sums needed for PA-based wOBA/xwOBA
-        wOBA_sum=(lambda s: df.loc[s.index & term_mask, "wOBA_result"].sum() if "wOBA_result" in df.columns else 0.0),
-        xwOBA_sum=(lambda s: df.loc[s.index & term_mask, "xwOBA_result"].sum() if "xwOBA_result" in df.columns else 0.0),
-        PA_term=(lambda s: int(term_mask.loc[s.index].sum())),
+        # PA-based sums
+        wOBA_sum=("wOBA_term","sum"),
+        xwOBA_sum=("xwOBA_term","sum"),
+        PA_term=("PA_term_flag","sum"),
     ).reset_index()
 
     # EV metrics
-    ev = ev_df.groupby(group_cols)["ExitSpeed"].mean().reset_index(name="EV")
-    ev_90 = ev_df.groupby(group_cols)["ExitSpeed"].quantile(0.9).reset_index(name="90thEV")
-    ev_max= ev_df.groupby(group_cols)["ExitSpeed"].max().reset_index(name="maxEV")
-    stats = stats.merge(ev, on=group_cols, how="left").merge(ev_90, on=group_cols, how="left").merge(ev_max, on=group_cols, how="left")
+    if not ev_df.empty:
+        ev = ev_df.groupby(group_cols)["ExitSpeed"].mean().reset_index(name="EV")
+        ev_90 = ev_df.groupby(group_cols)["ExitSpeed"].quantile(0.9).reset_index(name="90thEV")
+        ev_max= ev_df.groupby(group_cols)["ExitSpeed"].max().reset_index(name="maxEV")
+        stats = stats.merge(ev, on=group_cols, how="left").merge(ev_90, on=group_cols, how="left").merge(ev_max, on=group_cols, how="left")
+    else:
+        stats["EV"] = np.nan
+        stats["90thEV"] = np.nan
+        stats["maxEV"] = np.nan
 
     # League-scaled wOBA weights (match your sheet code)
     wBB, wHBP, w1B, w2B, w3B, wHR = 0.673, 0.718, 0.949, 1.483, 1.963, 2.571
@@ -2904,12 +2922,10 @@ def _build_pitcher_leaderboard_df(source_df: pd.DataFrame, pitch_types: list | N
         if c in stats.columns:
             stats[c] = stats[c].round(3)
 
-    # Force 0.000 format for wOBA/xwOBA specifically
     for c in ["wOBA","xwOBA"]:
         if c in stats.columns:
             stats[c] = stats[c].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "0.000")
 
-    # Order columns similar to your hitting sheets (but for Pitchers)
     ordered = [
         "Pitcher","PitcherTeam",
         "PA","BIP","AB","PitchCount","Hits","K","BB","HBP",
@@ -2925,18 +2941,23 @@ def _build_pitcher_leaderboard_df(source_df: pd.DataFrame, pitch_types: list | N
 def render_pitcher_leaderboard_tab():
     st.subheader("Pitcher Leaderboard")
 
-    # Base DF for this view (preset PitcherTeam = OLE_REB)
     df_base = filtered_df.copy()
+
+    # Default Pitcher Team = OLE_REB
     if "PitcherTeam" in df_base.columns:
-        default_team = "OLE_REB"
-        team = st.selectbox("Pitcher Team", sorted(df_base["PitcherTeam"].dropna().unique()), index=max(0, sorted(df_base["PitcherTeam"].dropna().unique()).index(default_team) if default_team in set(df_base["PitcherTeam"].dropna().unique()) else 0))
+        teams = sorted(df_base["PitcherTeam"].dropna().unique())
+        default_idx = teams.index("OLE_REB") if "OLE_REB" in teams else 0
+        team = st.selectbox("Pitcher Team", teams, index=default_idx)
         df_base = df_base[df_base["PitcherTeam"] == team].copy()
     else:
         st.info("`PitcherTeam` column not found; showing all teams.")
         team = None
 
-    # Pitch type multiselect (default to "All")
-    pitch_types = ["All"] + sorted(df_base["PitchType"].dropna().unique()) if "PitchType" in df_base.columns else ["All"]
+    # Pitch type multiselect (default to All)
+    if "PitchType" in df_base.columns:
+        pitch_types = ["All"] + sorted(df_base["PitchType"].dropna().unique())
+    else:
+        pitch_types = ["All"]
     selected_types = st.multiselect("Pitch Types", options=pitch_types, default=["All"])
 
     table = _build_pitcher_leaderboard_df(df_base, selected_types)
@@ -2945,6 +2966,7 @@ def render_pitcher_leaderboard_tab():
         return
 
     st.dataframe(format_dataframe(table))
+
 
 with tab_leaderboard:
     render_pitcher_leaderboard_tab()
