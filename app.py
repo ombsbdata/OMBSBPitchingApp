@@ -2941,7 +2941,7 @@ def _build_pitcher_leaderboard_df(source_df: pd.DataFrame, pitch_types: list | N
 def render_pitcher_leaderboard_tab():
     st.subheader("Pitcher Leaderboard")
 
-    df_base = filtered_df.copy()
+    df_base = df.copy()
 
     # Default Pitcher Team = OLE_REB
     if "PitcherTeam" in df_base.columns:
