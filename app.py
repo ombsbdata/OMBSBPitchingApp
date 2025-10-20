@@ -1202,7 +1202,7 @@ def generate_batted_ball_table():
         # A PA ends on: InPlay, HBP, Walk, Strikeout (when those columns exist)
         pa_mask = (
             df["PitchCall"].isin(["InPlay", "HitByPitch"])
-            | (df["KorBB"].isin(["Walk", "Strikeout"]) if "KorBB" in day.columns else False)
+            | (df["KorBB"].isin(["Walk", "Strikeout"]) if "KorBB" in df.columns else False)
         )
         pa_n = int(pa_mask.sum())
             
