@@ -1201,13 +1201,13 @@ def generate_batted_ball_table():
         # --- PA-aware daily wOBA/xwOBA ---
         # A PA ends on: InPlay, HBP, Walk, Strikeout (when those columns exist)
         pa_mask = (
-            day["PitchCall"].isin(["InPlay", "HitByPitch"])
-            | (day["KorBB"].isin(["Walk", "Strikeout"]) if "KorBB" in day.columns else False)
+            df["PitchCall"].isin(["InPlay", "HitByPitch"])
+            | (df["KorBB"].isin(["Walk", "Strikeout"]) if "KorBB" in day.columns else False)
         )
         pa_n = int(pa_mask.sum())
             
-        woba_mean = float(day["wOBA_result"].sum() / pa_n) if ("wOBA_result" in day.columns and pa_n > 0) else np.nan
-        xwoba_mean = float(day["xwOBA_result"].sum() / pa_n) if ("xwOBA_result" in day.columns and pa_n > 0) else np.nan
+        woba_mean = float(df["wOBA_result"].sum() / pa_n) if ("wOBA_result" in day.columns and pa_n > 0) else np.nan
+        xwoba_mean = float(df["xwOBA_result"].sum() / pa_n) if ("xwOBA_result" in day.columns and pa_n > 0) else np.nan
 
         # "All" row (round here too)
         all_row = {
