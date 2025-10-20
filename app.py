@@ -1123,6 +1123,7 @@ def generate_batted_ball_table():
         if df.empty:
             st.info("No data available for the selected parameters.")
             return
+
         needed = {"PitchType", "PitchCall", "ExitSpeed", "Angle"}
         if not needed.issubset(df.columns):
             st.info("Batted Ball Summary needs ExitSpeed, Angle, PitchCall.")
@@ -1133,6 +1134,14 @@ def generate_batted_ball_table():
             if c in df.columns:
                 df[c] = pd.to_numeric(df[c], errors="coerce")
 
+        # ---- Terminal (PA-ending) mask ----
+        has_korbb = "KorBB" in df.columns
+        terminal_mask = (
+            df["PitchCall"].isin(["InPlay", "HitByPitch"]) |
+            (df["KorBB"].isin(["Walk", "Strikeout"]) if has_korbb else False)
+        )
+
+        # ---- Categorize batted type ----
         def categorize_batted_type(angle):
             if pd.isna(angle):
                 return np.nan
@@ -1148,40 +1157,67 @@ def generate_batted_ball_table():
         # Build skeleton of all pitch types to avoid missing rows
         base = pd.DataFrame({"PitchType": sorted(df["PitchType"].unique())})
 
+        # Core BIP aggregations
         agg = (bip.groupby("PitchType")
-                  .agg(
-                      BIP=("PitchCall", "size"),
-                      GB=("BattedType", lambda x: (x == "GroundBall").sum()),
-                      FB=("BattedType", lambda x: (x == "FlyBall").sum()),
-                      EV=("ExitSpeed", "mean"),
-                      Hard=("ExitSpeed", lambda x: (x >= 95).sum()),
-                      Soft=("ExitSpeed", lambda x: (x < 95).sum()),
-                  )
-                  .reset_index())
+                 .agg(
+                     BIP=("PitchCall", "size"),
+                     GB=("BattedType", lambda x: (x == "GroundBall").sum()),
+                     FB=("BattedType", lambda x: (x == "FlyBall").sum()),
+                     EV=("ExitSpeed", "mean"),
+                     Hard=("ExitSpeed", lambda x: (x >= 95).sum()),
+                     Soft=("ExitSpeed", lambda x: (x < 95).sum()),
+                 )
+                 .reset_index())
 
         agg = base.merge(agg, on="PitchType", how="left").fillna(0)
 
+        # Count of pitches by pitch type
         counts = df.groupby("PitchType")["PitchType"].count().rename("Count").reset_index()
         agg = agg.merge(counts, on="PitchType", how="left")
 
-        # Add wOBA / xwOBA means (use all rows where the metric is non-null)
-        if "wOBA_result" in df.columns:
-            woba_by = df.groupby("PitchType")["wOBA_result"].mean().rename("wOBA").reset_index()
-            agg = agg.merge(woba_by, on="PitchType", how="left")
+        # ---- PA-based wOBA / xwOBA by pitch type ----
+        # PA per pitch type = count of terminal pitches of that type
+        pa_by_pt = (df.assign(_terminal=terminal_mask.astype(int))
+                      .groupby("PitchType")["_terminal"]
+                      .sum()
+                      .rename("PA_byPT")
+                      .reset_index())
+
+        # Sum of wOBA_result/xwOBA_result on terminal rows (PA outcome)
+        woba_sum_by = (df.loc[terminal_mask]
+                         .groupby("PitchType")["wOBA_result"]
+                         .sum()
+                         .rename("wOBA_sum")
+                         .reset_index()) if "wOBA_result" in df.columns else None
+
+        xwoba_sum_by = (df.loc[terminal_mask]
+                          .groupby("PitchType")["xwOBA_result"]
+                          .sum()
+                          .rename("xwOBA_sum")
+                          .reset_index()) if "xwOBA_result" in df.columns else None
+
+        agg = agg.merge(pa_by_pt, on="PitchType", how="left")
+
+        if woba_sum_by is not None:
+            agg = agg.merge(woba_sum_by, on="PitchType", how="left")
+            agg["wOBA"] = np.divide(agg["wOBA_sum"], agg["PA_byPT"],
+                                    out=np.zeros_like(agg["PA_byPT"], dtype=float),
+                                    where=agg["PA_byPT"] > 0)
         else:
             agg["wOBA"] = np.nan
 
-        if "xwOBA_result" in df.columns:
-            xwoba_by = df.groupby("PitchType")["xwOBA_result"].mean().rename("xwOBA").reset_index()
-            agg = agg.merge(xwoba_by, on="PitchType", how="left")
+        if xwoba_sum_by is not None:
+            agg = agg.merge(xwoba_sum_by, on="PitchType", how="left")
+            agg["xwOBA"] = np.divide(agg["xwOBA_sum"], agg["PA_byPT"],
+                                     out=np.zeros_like(agg["PA_byPT"], dtype=float),
+                                     where=agg["PA_byPT"] > 0)
         else:
             agg["xwOBA"] = np.nan
 
-        # === ROUNDING FIX (do this right after computing/merging) ===
-        if "wOBA" in agg.columns:
-            agg["wOBA"] = agg["wOBA"].round(3)
-        if "xwOBA" in agg.columns:
-            agg["xwOBA"] = agg["xwOBA"].round(3)
+        # === ROUNDING (numeric) before string formatting ===
+        for c in ["wOBA", "xwOBA"]:
+            if c in agg.columns:
+                agg[c] = agg[c].round(3)
 
         # percentages
         with np.errstate(divide="ignore", invalid="ignore"):
@@ -1190,26 +1226,21 @@ def generate_batted_ball_table():
             agg["Hard%"] = np.where(agg["BIP"] > 0, agg["Hard"] / agg["BIP"] * 100, 0.0)
             agg["Soft%"] = np.where(agg["BIP"] > 0, agg["Soft"] / agg["BIP"] * 100, 0.0)
 
-        # contact%
+        # Contact%
         swing_flags = ["StrikeSwinging", "InPlay", "FoulBallNotFieldable", "FoulBallFieldable"]
+
         def contact_pct(slice_df):
             swings = slice_df[slice_df["PitchCall"].isin(swing_flags)].shape[0]
             contact = slice_df[slice_df["PitchCall"].isin(["InPlay","FoulBallNotFieldable","FoulBallFieldable"])].shape[0]
             return (contact / swings * 100) if swings else 0.0
 
         agg["Contact%"] = agg["PitchType"].map(lambda pt: contact_pct(df[df["PitchType"] == pt]))
-        # --- PA-aware daily wOBA/xwOBA ---
-        # A PA ends on: InPlay, HBP, Walk, Strikeout (when those columns exist)
-        pa_mask = (
-            df["PitchCall"].isin(["InPlay", "HitByPitch"])
-            | (df["KorBB"].isin(["Walk", "Strikeout"]) if "KorBB" in df.columns else False)
-        )
-        pa_n = int(pa_mask.sum())
-            
-        woba_mean = float(df["wOBA_result"].sum() / pa_n) if ("wOBA_result" in day.columns and pa_n > 0) else np.nan
-        xwoba_mean = float(df["xwOBA_result"].sum() / pa_n) if ("xwOBA_result" in day.columns and pa_n > 0) else np.nan
 
-        # "All" row (round here too)
+        # ---- "All" row (PA-based wOBA/xwOBA overall) ----
+        pa_total = int(terminal_mask.sum())
+        woba_mean = float(df.loc[terminal_mask, "wOBA_result"].sum() / pa_total) if ("wOBA_result" in df.columns and pa_total > 0) else np.nan
+        xwoba_mean = float(df.loc[terminal_mask, "xwOBA_result"].sum() / pa_total) if ("xwOBA_result" in df.columns and pa_total > 0) else np.nan
+
         all_row = {
             "PitchType": "All",
             "Count": len(df),
@@ -1222,27 +1253,29 @@ def generate_batted_ball_table():
             "Contact%": contact_pct(df),
             "wOBA": round(woba_mean, 3) if pd.notna(woba_mean) else np.nan,
             "xwOBA": round(xwoba_mean, 3) if pd.notna(xwoba_mean) else np.nan,
+            "PA_byPT": pa_total  # keep for reference; will be dropped from display
         }
         agg = pd.concat([agg, pd.DataFrame([all_row])], ignore_index=True)
 
         # tidy display + put wOBA/xwOBA at the end
         display = (agg
-                   .drop(columns=["GB","FB","Hard","Soft"], errors="ignore")
-                   .rename(columns={"PitchType":"Pitch"}))
+                   .drop(columns=["GB", "FB", "Hard", "Soft", "wOBA_sum", "xwOBA_sum", "PA_byPT"], errors="ignore")
+                   .rename(columns={"PitchType": "Pitch"}))
 
         end_cols = ["wOBA", "xwOBA"]
         cols = [c for c in display.columns if c not in end_cols] + [c for c in end_cols if c in display.columns]
 
-        # OPTIONAL: force fixed 3-decimal text (e.g., 0.340 not 0.34)
+        # Force fixed 3-decimal *strings* so 0 prints as "0.000"
         for c in ["wOBA", "xwOBA"]:
-             if c in display.columns:
-                 display[c] = display[c].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "")
+            if c in display.columns:
+                display[c] = display[c].apply(lambda x: f"{x:.3f}" if pd.notna(x) else "0.000")
 
         st.subheader("Batted Ball Summary")
-
         st.dataframe(format_dataframe(display[cols]))
+
     except Exception as e:
         st.error(f"Error generating batted ball table: {e}")
+
 
 
 def plot_pitch_movement():
