@@ -2061,8 +2061,8 @@ from datetime import datetime, timedelta
 
 
 # === RENDER ===
-tab_flight, tab_biomech, tab_roll, tab_calc = st.tabs(
-    ["Pitch Flight Data", "Workload/30-Day", "Rolling Average Charts", "Stuff+ Calculator"]
+tab_flight, tab_biomech, tab_roll, tab_calc, tab_leaderboard = st.tabs(
+    ["Pitch Flight Data", "Workload/30-Day", "Rolling Average Charts", "Stuff+ Calculator", "Pitcher Leaderboard"]
 )
 
 
@@ -2757,6 +2757,197 @@ with tab_calc:
         if not counts.empty:
             default_pt = counts.index[0]
     render_stuff_calculator_tab(season_df, default_pitcher=pitcher_name, default_pitch_type=default_pt)
+
+
+def _terminal_mask(df: pd.DataFrame) -> pd.Series:
+    has_korbb = "KorBB" in df.columns
+    return (
+        df["PitchCall"].isin(["InPlay", "HitByPitch"]) |
+        (df["KorBB"].isin(["Walk", "Strikeout"]) if has_korbb else False)
+    )
+
+def _build_pitcher_leaderboard_df(source_df: pd.DataFrame, pitch_types: list | None = None) -> pd.DataFrame:
+    df = source_df.copy()
+
+    # Filter to selected pitch types (unless All or None)
+    if pitch_types and "All" not in pitch_types:
+        df = df[df["PitchType"].isin(pitch_types)].copy()
+
+    # Guards
+    if df.empty:
+        return pd.DataFrame()
+
+    # Basic numeric coercions used in metrics
+    for c in ["wOBA_result", "xwOBA_result", "ExitSpeed", "Angle"]:
+        if c in df.columns:
+            df[c] = pd.to_numeric(df[c], errors="coerce")
+
+    # Flags (align with your batter tables)
+    df["PA_flag"]  = df["PitchCall"].isin(["InPlay", "HitByPitch"]) | df.get("KorBB", pd.Series(False, index=df.index)).isin(["Strikeout", "Walk"])
+    df["AB_flag"]  = df["PitchCall"].eq("InPlay") | df.get("KorBB", pd.Series(False, index=df.index)).eq("Strikeout")
+    df["BIP_flag"] = df["PitchCall"].eq("InPlay")
+    df["Hit_flag"] = df["PlayResult"].isin(["Single","Double","Triple","HomeRun"])
+    df["_1B_flag"] = df["PlayResult"].eq("Single")
+    df["_2B_flag"] = df["PlayResult"].eq("Double")
+    df["_3B_flag"] = df["PlayResult"].eq("Triple")
+    df["HR_flag"]  = df["PlayResult"].eq("HomeRun")
+    df["BB_flag"]  = df.get("KorBB", pd.Series(False, index=df.index)).eq("Walk")
+    df["K_flag"]   = df.get("KorBB", pd.Series(False, index=df.index)).eq("Strikeout")
+    df["HBP_flag"] = df["PitchCall"].eq("HitByPitch")
+    df["Barrel_flag"] = (df["PitchCall"].eq("InPlay")) & (df["ExitSpeed"] >= 95) & (df["Angle"].between(10, 35))
+    df["swing_flag"]  = df["PitchCall"].isin(["StrikeSwinging","InPlay","FoulBallNotFieldable","FoulBallFieldable"])
+    df["contact_flag"]= df["PitchCall"].isin(["InPlay","FoulBallNotFieldable","FoulBallFieldable"])
+    df["whiff_flag"]  = df["PitchCall"].eq("StrikeSwinging")
+    df["zone_flag"] = (
+        (df["PlateLocHeight"] >= 1.5) &
+        (df["PlateLocHeight"] <= 3.3775) &
+        (df["PlateLocSide"].abs() <= 0.83083)
+    )
+    df["zone_swing_flag"] = df["swing_flag"] & df["zone_flag"]
+    df["OZone_flag"] = ~df["zone_flag"]
+    df["chase_zone_flag"] = (
+        (df["PlateLocHeight"] < 1.37750) |
+        (df["PlateLocHeight"] > 3.50000) |
+        (df["PlateLocSide"].abs() > 0.99750)
+    )
+    df["chase_swing_flag"] = df["swing_flag"] & df["chase_zone_flag"]
+    df["hard_flag"] = df["BIP_flag"] & (df["ExitSpeed"] >= 95)
+    df["GB_flag"] = df["BIP_flag"] & (df["Angle"] < 10)
+    df["LD_flag"] = df["BIP_flag"] & (df["Angle"].between(10, 25, inclusive="left"))
+    df["FB_flag"] = df["BIP_flag"] & (df["Angle"].between(25, 50, inclusive="left"))
+    df["PU_flag"] = df["BIP_flag"] & (df["Angle"] > 50)
+
+    term_mask = _terminal_mask(df)
+
+    # Grouping (Pitcher leaderboard, default team OLE_REB enforced upstream)
+    group_cols = ["Pitcher", "PitcherTeam"]
+    ev_df = df[df["BIP_flag"] & (df.get("TaggedHitType","").ne("Bunt"))]  # EV only on non-bunt BIP
+
+    stats = df.groupby(group_cols).agg(
+        PA=("PA_flag","sum"),
+        AB=("AB_flag","sum"),
+        BIP=("BIP_flag","sum"),
+        Hits=("Hit_flag","sum"),
+        BB=("BB_flag","sum"),
+        K=("K_flag","sum"),
+        HBP=("HBP_flag","sum"),
+        _1B=("_1B_flag","sum"),
+        _2B=("_2B_flag","sum"),
+        _3B=("_3B_flag","sum"),
+        HR=("HR_flag","sum"),
+        LA=("Angle","mean"),
+        Barrels=("Barrel_flag","sum"),
+        RV=("run_value","sum"),
+        PitchCount=("PitchCall","count"),
+        Swings=("swing_flag","sum"),
+        ContactMade=("contact_flag","sum"),
+        Whiffs=("whiff_flag","sum"),
+        ChaseSwings=("chase_swing_flag","sum"),
+        ZoneSwings=("zone_swing_flag","sum"),
+        ZonePitches=("zone_flag","sum"),
+        OZonePitches=("OZone_flag","sum"),
+        FPSw=((df["Balls"].eq(0) & df["Strikes"].eq(0) & df["swing_flag"]).astype(int),"sum"),
+        FirstPitchTotal=((df["Balls"].eq(0) & df["Strikes"].eq(0)).astype(int),"sum"),
+        HardHits=("hard_flag","sum"),
+        GB=("GB_flag","sum"),
+        LD=("LD_flag","sum"),
+        FB=("FB_flag","sum"),
+        PU=("PU_flag","sum"),
+        # sums needed for PA-based wOBA/xwOBA
+        wOBA_sum=(lambda s: df.loc[s.index & term_mask, "wOBA_result"].sum() if "wOBA_result" in df.columns else 0.0),
+        xwOBA_sum=(lambda s: df.loc[s.index & term_mask, "xwOBA_result"].sum() if "xwOBA_result" in df.columns else 0.0),
+        PA_term=(lambda s: int(term_mask.loc[s.index].sum())),
+    ).reset_index()
+
+    # EV metrics
+    ev = ev_df.groupby(group_cols)["ExitSpeed"].mean().reset_index(name="EV")
+    ev_90 = ev_df.groupby(group_cols)["ExitSpeed"].quantile(0.9).reset_index(name="90thEV")
+    ev_max= ev_df.groupby(group_cols)["ExitSpeed"].max().reset_index(name="maxEV")
+    stats = stats.merge(ev, on=group_cols, how="left").merge(ev_90, on=group_cols, how="left").merge(ev_max, on=group_cols, how="left")
+
+    # League-scaled wOBA weights (match your sheet code)
+    wBB, wHBP, w1B, w2B, w3B, wHR = 0.673, 0.718, 0.949, 1.483, 1.963, 2.571
+
+    # wOBA & xwOBA (PA-based)
+    stats["wOBA_num"] = (stats["BB"]*wBB + stats["HBP"]*wHBP + stats["_1B"]*w1B + stats["_2B"]*w2B + stats["_3B"]*w3B + stats["HR"]*wHR)
+    stats["wOBA"]  = np.divide(stats["wOBA_num"], stats["PA"], out=np.zeros_like(stats["PA"], dtype=float), where=stats["PA"]>0)
+    stats["xwOBA"] = np.divide(stats["xwOBA_sum"], stats["PA_term"], out=np.zeros_like(stats["PA_term"], dtype=float), where=stats["PA_term"]>0)
+
+    # Derived
+    stats["TB"]  = stats["_1B"] + 2*stats["_2B"] + 3*stats["_3B"] + 4*stats["HR"]
+    stats["AVG"] = np.divide(stats["Hits"], stats["AB"], out=np.zeros_like(stats["AB"], dtype=float), where=stats["AB"]>0)
+    stats["OBP"] = np.divide((stats["Hits"]+stats["BB"]+stats["HBP"]), stats["PA"], out=np.zeros_like(stats["PA"], dtype=float), where=stats["PA"]>0)
+    stats["SLG"] = np.divide(stats["TB"], stats["AB"], out=np.zeros_like(stats["AB"], dtype=float), where=stats["AB"]>0)
+    stats["OPS"] = stats["OBP"] + stats["SLG"]
+    stats["K%"]  = np.divide(stats["K"], stats["PA"], out=np.zeros_like(stats["PA"], dtype=float), where=stats["PA"]>0)
+    stats["BB%"] = np.divide(stats["BB"], stats["PA"], out=np.zeros_like(stats["PA"], dtype=float), where=stats["PA"]>0)
+    stats["Barrel%"] = np.divide(stats["Barrels"], stats["BIP"], out=np.zeros_like(stats["BIP"], dtype=float), where=stats["BIP"]>0)
+    stats["RV/100"]  = np.divide(stats["RV"], stats["PitchCount"], out=np.zeros_like(stats["PitchCount"], dtype=float), where=stats["PitchCount"]>0) * 100.0
+    stats["Contact%"]= np.divide(stats["ContactMade"], stats["Swings"], out=np.zeros_like(stats["Swings"], dtype=float), where=stats["Swings"]>0)
+    stats["Whiff%"]  = np.divide(stats["Whiffs"], stats["Swings"], out=np.zeros_like(stats["Swings"], dtype=float), where=stats["Swings"]>0)
+    stats["Swing%"]  = np.divide(stats["Swings"], stats["PitchCount"], out=np.zeros_like(stats["PitchCount"], dtype=float), where=stats["PitchCount"]>0)
+    stats["Chase%"]  = np.divide(stats["ChaseSwings"], stats["OZonePitches"], out=np.zeros_like(stats["OZonePitches"], dtype=float), where=stats["OZonePitches"]>0)
+    stats["ZSw%"]    = np.divide(stats["ZoneSwings"], stats["ZonePitches"], out=np.zeros_like(stats["ZonePitches"], dtype=float), where=stats["ZonePitches"]>0)
+    stats["SwStr%"]  = np.divide(stats["Whiffs"], stats["PitchCount"], out=np.zeros_like(stats["PitchCount"], dtype=float), where=stats["PitchCount"]>0)
+    stats["FPSw%"]   = np.divide(stats["FPSw"], stats["FirstPitchTotal"], out=np.zeros_like(stats["FirstPitchTotal"], dtype=float), where=stats["FirstPitchTotal"]>0)
+    stats["HardHit%"]= np.divide(stats["HardHits"], stats["BIP"], out=np.zeros_like(stats["BIP"], dtype=float), where=stats["BIP"]>0)
+    stats["GB%"]     = np.divide(stats["GB"], stats["BIP"], out=np.zeros_like(stats["BIP"], dtype=float), where=stats["BIP"]>0)
+    stats["LD%"]     = np.divide(stats["LD"], stats["BIP"], out=np.zeros_like(stats["BIP"], dtype=float), where=stats["BIP"]>0)
+    stats["FB%"]     = np.divide(stats["FB"], stats["BIP"], out=np.zeros_like(stats["BIP"], dtype=float), where=stats["BIP"]>0)
+    stats["PU%"]     = np.divide(stats["PU"], stats["BIP"], out=np.zeros_like(stats["BIP"], dtype=float), where=stats["BIP"]>0)
+
+    stats["wOBA_diff"] = stats["xwOBA"] - stats["wOBA"]
+
+    # Rounding + 0.000 string format for wOBA/xwOBA
+    for c in ["AVG","OBP","SLG","OPS","wOBA","xwOBA","wOBA_diff","K%","BB%","Barrel%","RV/100",
+              "Contact%","Whiff%","Swing%","Chase%","ZSw%","SwStr%","FPSw%","HardHit%","GB%","LD%","FB%","PU%"]:
+        if c in stats.columns:
+            stats[c] = stats[c].round(3)
+
+    # Force 0.000 format for wOBA/xwOBA specifically
+    for c in ["wOBA","xwOBA"]:
+        if c in stats.columns:
+            stats[c] = stats[c].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "0.000")
+
+    # Order columns similar to your hitting sheets (but for Pitchers)
+    ordered = [
+        "Pitcher","PitcherTeam",
+        "PA","BIP","AB","PitchCount","Hits","K","BB","HBP",
+        "_1B","_2B","_3B","HR","TB","AVG","OBP","SLG","OPS",
+        "wOBA","xwOBA","wOBA_diff","K%","BB%","Swing%","FPSw%",
+        "Whiff%","SwStr%","Contact%","ZSw%","Chase%","HardHit%",
+        "EV","90thEV","maxEV","GB%","LD%","FB%","PU%","LA",
+        "Barrels","Barrel%","RV","RV/100"
+    ]
+    existing = [c for c in ordered if c in stats.columns]
+    return stats[existing].sort_values(["PitcherTeam","Pitcher"]).reset_index(drop=True)
+
+def render_pitcher_leaderboard_tab():
+    st.subheader("Pitcher Leaderboard")
+
+    # Base DF for this view (preset PitcherTeam = OLE_REB)
+    df_base = filtered_df.copy()
+    if "PitcherTeam" in df_base.columns:
+        default_team = "OLE_REB"
+        team = st.selectbox("Pitcher Team", sorted(df_base["PitcherTeam"].dropna().unique()), index=max(0, sorted(df_base["PitcherTeam"].dropna().unique()).index(default_team) if default_team in set(df_base["PitcherTeam"].dropna().unique()) else 0))
+        df_base = df_base[df_base["PitcherTeam"] == team].copy()
+    else:
+        st.info("`PitcherTeam` column not found; showing all teams.")
+        team = None
+
+    # Pitch type multiselect (default to "All")
+    pitch_types = ["All"] + sorted(df_base["PitchType"].dropna().unique()) if "PitchType" in df_base.columns else ["All"]
+    selected_types = st.multiselect("Pitch Types", options=pitch_types, default=["All"])
+
+    table = _build_pitcher_leaderboard_df(df_base, selected_types)
+    if table.empty:
+        st.info("No data available for the selected filters.")
+        return
+
+    st.dataframe(format_dataframe(table))
+
+with tab_leaderboard:
+    render_pitcher_leaderboard_tab()
 
 
 
