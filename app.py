@@ -393,7 +393,7 @@ def _game_types_in(df: pd.DataFrame) -> list[str]:
 _all_types = sorted(set(_game_types_in(season_df)) | set(_game_types_in(rolling_df)))
 
 # Default to IS + FallGame (omit LBP). If none detected, show all.
-_default_types = [t for t in _all_types if t in {"IS", "FallGame"}] or _all_types
+_default_types = [t for t in _all_types if t in {"IS", "FallGame","LBP"}] or _all_types
 
 game_type_choices = st.sidebar.multiselect(
     "Show pitches from (leave empty for All):",
