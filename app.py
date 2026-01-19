@@ -1532,7 +1532,7 @@ def generate_by_date_overall_table():
                 out[col] = out[col].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "0.000")
 
         st.subheader("By-Date (Overall) — Pitch Flight Data")
-        cols = ["Date","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%","wOBA","xwOBA"]
+        cols = ["Date","game_type","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%","wOBA","xwOBA"]
         st.dataframe(format_dataframe(out[cols]), use_container_width=True, hide_index=True)
 
     except Exception as e:
@@ -1941,7 +1941,7 @@ def render_rolling_average_charts_tab():
                                     help="Rolling window size over daily rows per pitch type.")
 
             # Daily mean by date & pitch type
-            daily = (df.groupby(["Date", "PitchType", "game_type"])
+            daily = (df.groupby(["Date", "PitchType"])
                        .agg({k: "mean" for k in metrics_selected_keys})
                        .reset_index()
                        .sort_values(["PitchType", "Date"]))
