@@ -1941,7 +1941,7 @@ def render_rolling_average_charts_tab():
                                     help="Rolling window size over daily rows per pitch type.")
 
             # Daily mean by date & pitch type
-            daily = (df.groupby(["Date", "PitchType"])
+            daily = (df.groupby(["Date", "PitchType", "game_type"])
                        .agg({k: "mean" for k in metrics_selected_keys})
                        .reset_index()
                        .sort_values(["PitchType", "Date"]))
