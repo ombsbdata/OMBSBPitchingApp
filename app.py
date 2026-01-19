@@ -1458,7 +1458,7 @@ def generate_by_date_overall_table():
             if total == 0: continue
 
 
-            gt = day["game_type"]
+            gt = day["game_type"].iloc[0]
 
             in_zone = calculate_in_zone(day) if {"PlateLocHeight","PlateLocSide"}.issubset(day.columns) else day.iloc[0:0]
             swings = day["PitchCall"].isin(swing_flags).sum()
