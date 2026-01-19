@@ -999,6 +999,8 @@ def generate_pitch_traits_table():
             .agg(
                 Count=("PitchType", "size"),
                 Velo=("RelSpeed", "mean"),
+                MinVelo=("RelSpeed", "min"),
+                MaxVelo=("RelSpeed", "max"),
                 iVB=("InducedVertBreak", "mean"),
                 HB=("HorzBreak", "mean"),
                 Spin=("SpinRate", "mean"),
@@ -1034,6 +1036,8 @@ def generate_pitch_traits_table():
             "PitchType": "All",
             "Count": int(total),
             "Velo": round(wavg("Velo"), 1),
+            "MinVelo": round(df["RelSpeed"].min(),1),
+            "MaxVelo": round(df["RelSpeed"].max(), 1),
             "iVB": round(wavg("iVB"), 1),
             "HB": round(wavg("HB"), 1),
             "Spin": round(wavg("Spin"), 1),
