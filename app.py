@@ -2443,9 +2443,12 @@ with tab_biomech:
         "IP heuristic: counts **Strikeout** in `KorBB` and **Out/Sacrifice** in `PlayResult` as 1 out each; "
         "IP shown in baseball decimals (e.g., 1.2 = 5 outs)."
     )
-     # ==== VALD (ForceDecks) section — robust name matching (dual keys, suffix tolerant) ====
+# Modified VALD section for the Streamlit app
+# Replace the existing VALD section with this code
+
+# ==== VALD (ForceDecks) section — robust name matching (dual keys, suffix tolerant) ====
     st.markdown("---")
-    st.subheader("VALD (ForceDecks)")
+    st.subheader("VALD (ForceDecks & Dynamo)")
     
     @st.cache_data(show_spinner=False)
     def load_vald_df():
@@ -2537,7 +2540,7 @@ with tab_biomech:
     
         # Make common metric columns numeric (safe convert)
         for c in df.columns:
-            if c in (name_col, "VALD_Player", "Key_LF", "Key_FL", "VALD_DateTime", "VALD_Date", "FP_Tag_clean"):
+            if c in (name_col, "VALD_Player", "Key_LF", "Key_FL", "VALD_DateTime", "VALD_Date", "FP_Tag_clean", "DataSource"):
                 continue
             df[c] = pd.to_numeric(df[c], errors="ignore")
     
@@ -2546,8 +2549,6 @@ with tab_biomech:
         vald_fp_col   = "FP_Tag_clean"      # used for filtering + line_dash
         return df, name_col, vald_date_col, vald_fp_col
     
-        
-        
     vald_df, vald_name_col, vald_date_col, vald_fp_col = load_vald_df()
     
     if vald_df is None or vald_df.empty:
@@ -2600,8 +2601,26 @@ with tab_biomech:
             vald_cut["Pitcher"] = vald_cut.apply(to_pitcher, axis=1)
     
             # ---------- Controls ----------
-            c1, c2, c3 = st.columns([1.2, 0.9, 1.7])
+            c1, c2, c3, c4 = st.columns([1.0, 1.2, 0.9, 1.7])
             with c1:
+                # Data source selector (ForceDeck vs Dynamo)
+                if "DataSource" in vald_cut.columns:
+                    data_sources = sorted(vald_cut["DataSource"].dropna().unique().tolist())
+                    if len(data_sources) > 1:
+                        data_source = st.selectbox(
+                            "Data Source",
+                            options=data_sources,
+                            index=0,
+                            help="Choose between ForceDeck and Dynamo data"
+                        )
+                    else:
+                        data_source = data_sources[0] if data_sources else "All"
+                        st.caption(f"Data Source: {data_source}")
+                else:
+                    data_source = "All"
+                    st.caption("Data Source: All")
+            
+            with c2:
                 view_mode = st.radio(
                     "Table view",
                     ["Cumulative Average", "Individual Tests"],
@@ -2609,12 +2628,12 @@ with tab_biomech:
                     horizontal=True,
                     help="Cumulative Average aggregates in the selected date range (and F/P filter) per player."
                 )
-            with c2:
+            with c3:
                 if vald_fp_col:
                     fp_opt = st.selectbox("Fresh/Post filter", ["Both","F","P","Fresh","Post"], index=0)
                 else:
                     fp_opt = "Both"
-            with c3:
+            with c4:
                 maxd = pd.to_datetime(vald_cut[vald_date_col].max()) if vald_date_col else None
                 mind = pd.to_datetime(vald_cut[vald_date_col].min()) if vald_date_col else None
                 if pd.notna(mind) and pd.notna(maxd):
@@ -2625,7 +2644,12 @@ with tab_biomech:
                 else:
                     date_range = None
     
+            # Apply data source filter
             work = vald_cut.copy()
+            if "DataSource" in work.columns and data_source != "All":
+                work = work[work["DataSource"] == data_source].copy()
+                
+            # Apply other filters
             if vald_fp_col and fp_opt != "Both":
                 want_fresh = fp_opt.lower().startswith("f")
                 mask = work[vald_fp_col].str.lower().isin(["f","fresh"]) if want_fresh else work[vald_fp_col].str.lower().isin(["p","post"])
@@ -2635,7 +2659,7 @@ with tab_biomech:
                 work = work[(work[vald_date_col] >= sdt) & (work[vald_date_col] <= edt)]
     
             # Identify numeric metric columns
-            non_metric = {vald_name_col, "VALD_Player", "Key_LF", "Key_FL", "Pitcher", vald_date_col}
+            non_metric = {vald_name_col, "VALD_Player", "Key_LF", "Key_FL", "Pitcher", vald_date_col, "DataSource"}
             if vald_fp_col: non_metric.add(vald_fp_col)
             metric_cols = [c for c in work.columns if c not in non_metric and pd.api.types.is_numeric_dtype(work[c])]
     
@@ -2663,35 +2687,59 @@ with tab_biomech:
     
             # ---------- Table ----------
             if view_mode == "Individual Tests":
-                disp = work[["Pitcher", vald_date_col] + ([vald_fp_col] if vald_fp_col else []) + metric_cols].copy()
+                table_cols = ["Pitcher", vald_date_col]
+                if "DataSource" in work.columns:
+                    table_cols.append("DataSource")
+                if vald_fp_col:
+                    table_cols.append(vald_fp_col)
+                table_cols.extend(metric_cols)
+                disp = work[table_cols].copy()
             else:
-                agg = (work.groupby("Pitcher", as_index=False)
-                            .agg({vald_date_col: "max", **{c: "mean" for c in metric_cols}}))
-                disp = agg[["Pitcher", vald_date_col] + metric_cols].copy()
+                agg_dict = {vald_date_col: "max"}
+                if "DataSource" in work.columns:
+                    agg_dict["DataSource"] = lambda x: x.mode().iat[0] if not x.mode().empty else np.nan
+                agg_dict.update({c: "mean" for c in metric_cols})
+                agg = work.groupby("Pitcher", as_index=False).agg(agg_dict)
+                
+                table_cols = ["Pitcher", vald_date_col]
+                if "DataSource" in work.columns:
+                    table_cols.append("DataSource")
+                    
                 if vald_fp_col:
                     mode_fp = (work.groupby("Pitcher")[vald_fp_col]
                                    .agg(lambda s: s.mode().iat[0] if not s.mode().empty else np.nan)).reset_index()
-                    disp = disp.merge(mode_fp, on="Pitcher", how="left")
-                    disp = disp[["Pitcher", vald_date_col, vald_fp_col] + metric_cols]
+                    agg = agg.merge(mode_fp, on="Pitcher", how="left")
+                    table_cols.append(vald_fp_col)
+                    
+                table_cols.extend(metric_cols)
+                disp = agg[table_cols].copy()
     
             col_cfg = {
                 "Pitcher": st.column_config.Column("Pitcher", help="Matched by robust normalization (First/Last variants; suffix tolerant)"),
                 vald_date_col: st.column_config.DateColumn(vald_date_col, help="Test date")
             }
+            if "DataSource" in disp.columns:
+                col_cfg["DataSource"] = st.column_config.Column("Source", help="ForceDeck or Dynamo")
             if vald_fp_col:
                 col_cfg[vald_fp_col] = st.column_config.Column(vald_fp_col, help="Fresh/Post label")
     
-            rename_map = {c: short_map[c] for c in metric_cols}
+            rename_map = {c: short_map[c] for c in metric_cols if c in short_map}
             disp = disp.rename(columns=rename_map)
-            for short, full in {short_map[c]: c for c in metric_cols}.items():
+            for short, full in {short_map[c]: c for c in metric_cols if c in short_map}.items():
                 col_cfg[short] = st.column_config.NumberColumn(short, help=full, format="%.2f")
     
-            st.markdown("**VALD Tests Table**")
+            # Update table title based on data source
+            if data_source != "All":
+                table_title = f"**VALD {data_source} Tests Table**"
+            else:
+                table_title = "**VALD Tests Table**"
+            st.markdown(table_title)
             st.dataframe(disp.sort_values(["Pitcher", vald_date_col]),
                          use_container_width=True, hide_index=True, column_config=col_cfg)
     
             # ---------- Rolling charts ----------
-            st.markdown("**Rolling charts**")
+            chart_title = f"**Rolling charts - {data_source}**" if data_source != "All" else "**Rolling charts**"
+            st.markdown(chart_title)
             rc1, rc2, rc3 = st.columns([1.2, 1.5, 0.9])
             with rc1:
                 p_for_chart = st.selectbox(
@@ -2702,7 +2750,7 @@ with tab_biomech:
                 )
             with rc2:
                 # build UI options from the short labels
-                options = [short_map[c] for c in metric_cols]
+                options = [short_map[c] for c in metric_cols if c in short_map]
             
                 # pick defaults by prefix so it works even if units or wording vary
                 def pick_by_prefix(prefix, pool):
@@ -2712,7 +2760,12 @@ with tab_biomech:
                             return label
                     return None
             
-                wanted_prefixes = ["PP", "EPP", "RM", "JH"]  # Propulsive Power, Ecc. PP, Reactive Movement, Jump Height
+                # Different defaults for ForceDeck vs Dynamo
+                if data_source == "Dynamo":
+                    wanted_prefixes = ["GM", "GRIP", "TM", "TIME"]  # GripMaxForce, TimeToMaxGrip variations
+                else:
+                    wanted_prefixes = ["PP", "EPP", "RM", "JH"]  # Propulsive Power, Ecc. PP, Reactive Movement, Jump Height
+                
                 default_labels = []
                 for p in wanted_prefixes:
                     lab = pick_by_prefix(p, options)
@@ -2722,9 +2775,9 @@ with tab_biomech:
                 metrics_to_plot = st.multiselect(
                     "Metrics to include",
                     options=options,
-                    default=default_labels
+                    default=default_labels[:4]  # Limit to 4 for readability
                 )
-
+    
             with rc3:
                 roll_win = st.slider("Rolling window (tests)", 1, 10, 3, 1)
     
@@ -2738,12 +2791,17 @@ with tab_biomech:
                     full = inv.get(short)
                     if full not in series.columns:
                         continue
-                    s = series[[vald_date_col, full] + ([vald_fp_col] if vald_fp_col else [])].rename(columns={full: "Value"})
+                    cols_needed = [vald_date_col, full]
+                    if vald_fp_col:
+                        cols_needed.append(vald_fp_col)
+                    s = series[cols_needed].rename(columns={full: "Value"})
                     s["Metric"] = short
                     tidy.append(s)
                 if tidy:
                     tidy = pd.concat(tidy, ignore_index=True)
-                    grp_keys = ["Metric"] + ([vald_fp_col] if vald_fp_col else [])
+                    grp_keys = ["Metric"]
+                    if vald_fp_col:
+                        grp_keys.append(vald_fp_col)
                     out = []
                     for _, g in tidy.groupby(grp_keys, dropna=False):
                         g = g.sort_values(vald_date_col).copy()
@@ -2751,18 +2809,19 @@ with tab_biomech:
                         out.append(g)
                     tidy = pd.concat(out, ignore_index=True)
     
+                    chart_subtitle = f"Rolling ({roll_win}-test) — {p_for_chart} — {data_source}" if data_source != "All" else f"Rolling ({roll_win}-test) — {p_for_chart}"
                     fig = px.line(
                         tidy, x=vald_date_col, y="Roll",
                         color="Metric",
                         line_dash=(vald_fp_col if vald_fp_col else None),
                         markers=True,
-                        title=f"Rolling ({roll_win}-test) — {p_for_chart}"
+                        title=chart_subtitle
                     )
                     fig.update_layout(template="plotly_white", xaxis_title="Date", yaxis_title="Score", legend_title=None)
                     st.plotly_chart(fig, use_container_width=True)
                 else:
                     st.info("Select at least one metric to plot.")
-    # ==== End VALD (ForceDecks) section ====
+# ==== End VALD (ForceDecks & Dynamo) section ====
 
 
 
