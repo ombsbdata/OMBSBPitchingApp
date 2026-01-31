@@ -887,31 +887,31 @@ def plot_heatmaps(map_type: str):
                 num = hist2d(xs[swings_mask], ys[swings_mask]) # swings
                 grid = ratio_of_smooths(num, den) * 100.0
                 title_suffix = title_suffix_fmt.format(sw=int(swings_mask.sum()), n=n)
-
-        elif key == "whiff":
-            if "PitchCall" not in sub.columns:
-                continue
-            # Filter to in-zone pitches only
-            in_zone_mask = (
-                (sub["PlateLocHeight"] >= 1.5) & 
-                (sub["PlateLocHeight"] <= 3.3775) &
-                (sub["PlateLocSide"] >= -0.83083) & 
-                (sub["PlateLocSide"] <= 0.83083)
-            )
-            # Get StrikeSwinging pitches in the zone
-            zone_whiff_mask = sub["PitchCall"].eq(WHIFF) & in_zone_mask
-            
-            # Plot just the frequency of zone whiffs (not as a rate)
-            zone_whiff_xs = xs[zone_whiff_mask]
-            zone_whiff_ys = ys[zone_whiff_mask]
-            
-            if len(zone_whiff_xs) > 0:
-                grid = hist2d(zone_whiff_xs, zone_whiff_ys)
-                grid = _smooth(grid.T).T  # Remove the n parameter
-            else:
-                grid = np.zeros((NX, NY))
-            
-            title_suffix = f"Zone Whiffs (n={int(zone_whiff_mask.sum())})"
+    
+            elif key == "whiff":
+                if "PitchCall" not in sub.columns:
+                    continue
+                # Filter to in-zone pitches only
+                in_zone_mask = (
+                    (sub["PlateLocHeight"] >= 1.5) & 
+                    (sub["PlateLocHeight"] <= 3.3775) &
+                    (sub["PlateLocSide"] >= -0.83083) & 
+                    (sub["PlateLocSide"] <= 0.83083)
+                )
+                # Get StrikeSwinging pitches in the zone
+                zone_whiff_mask = sub["PitchCall"].eq(WHIFF) & in_zone_mask
+                
+                # Plot just the frequency of zone whiffs (not as a rate)
+                zone_whiff_xs = xs[zone_whiff_mask]
+                zone_whiff_ys = ys[zone_whiff_mask]
+                
+                if len(zone_whiff_xs) > 0:
+                    grid = hist2d(zone_whiff_xs, zone_whiff_ys)
+                    grid = _smooth(grid.T).T  # Remove the n parameter
+                else:
+                    grid = np.zeros((NX, NY))
+                
+                title_suffix = f"Zone Whiffs (n={int(zone_whiff_mask.sum())})"
 
             elif key == "ev":
                 if "PitchCall" not in sub.columns:
