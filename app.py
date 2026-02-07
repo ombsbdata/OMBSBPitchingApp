@@ -1695,9 +1695,9 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
                 st.info(f"No data available for {xdt.strftime('%B %d, %Y')}.")
                 return
 
-            if "PitchNo" in day.columns:
-                day["PitchNo"] = pd.to_numeric(day["PitchNo"], errors="coerce")
-                day = day.dropna(subset=["PitchNo"]).sort_values("PitchNo")
+            if "PitcherPitchNo" in day.columns:
+                day["PitcherPitchNo"] = pd.to_numeric(day["PitcherPitchNo"], errors="coerce")
+                day = day.dropna(subset=["PitcherPitchNo"]).sort_values("PitchNo")
 
 
             figs = []
@@ -1705,19 +1705,19 @@ def generate_rolling_line_graphs(view_mode: str, pitch_by_pitch_date=None):
                 if metric not in day.columns:
                     continue
                 fig = px.line(
-                    day, x="PitchNo", y=metric, color="PitchType",
+                    day, x="PitcherPitchNo", y=metric, color="PitchType",
                     title=f"{label} Pitch-by-Pitch",
-                    labels={"PitchNo": "Pitch #", metric: label, "PitchType": "Pitch Type"},
-                    color_discrete_map=color_map, hover_data={"PitchNo": ":.0f", metric: ":.2f"},
+                    labels={"PitcherPitchNo": "Pitch #", metric: label, "PitchType": "Pitch Type"},
+                    color_discrete_map=color_map, hover_data={"PitcherPitchNo": ":.0f", metric: ":.2f"},
                 )
                 for pt in day["PitchType"].unique():
                     sub = day[day["PitchType"] == pt]
                     fig.add_scatter(
-                        x=sub["PitchNo"], y=sub[metric], mode="markers",
+                        x=sub["PitcherPitchNo"], y=sub[metric], mode="markers",
                         marker=dict(size=8, color=color_map.get(pt, "black")),
                         name=f"{pt} pts", showlegend=False
                     )
-                fig.update_xaxes(range=[day["PitchNo"].min() - 1, day["PitchNo"].max() + 1])
+                fig.update_xaxes(range=[day["PitcherPitchNo"].min() - 1, day["PitcherPitchNo"].max() + 1])
                 fig.update_layout(xaxis_title="Pitch #", yaxis_title=label, legend_title="Pitch Type",
                                   template="plotly_white", hovermode="x unified")
                 fig = _tight_layout(fig)
@@ -2028,18 +2028,18 @@ def render_rolling_average_charts_tab():
                 st.info(f"No data for {xdt.strftime('%B %d, %Y')}.")
                 return
 
-            if "PitchNo" not in day.columns:
-                st.info("This view requires a PitchNo column.")
+            if "PitcherPitchNo" not in day.columns:
+                st.info("This view requires a PitcherPitchNo column.")
                 return
 
-            day["PitchNo"] = pd.to_numeric(day["PitchNo"], errors="coerce")
-            day = day.dropna(subset=["PitchNo"]).sort_values(["PitchType", "PitchNo"])
+            day["PitcherPitchNo"] = pd.to_numeric(day["PitcherPitchNo"], errors="coerce")
+            day = day.dropna(subset=["PitcherPitchNo"]).sort_values(["PitchType", "PitcherPitchNo"])
             day = day[day["PitchType"].isin(pt_selected)]
 
             # Rolling per PitchType over sequential pitches
             rolled = []
             for pt, g in day.groupby("PitchType", as_index=False):
-                g = g.sort_values("PitchNo").copy()
+                g = g.sort_values("PitcherPitchNo").copy()
                 for k in metrics_selected_keys:
                     if k in g.columns:
                         g[k] = pd.to_numeric(g[k], errors="coerce")
@@ -2049,7 +2049,7 @@ def render_rolling_average_charts_tab():
 
             if overlay_mode == "Overlay metrics in one chart" and len(metrics_selected_keys) >= 2:
                 fig = _overlay_pitch_chart(
-                    rolled, "PitchNo", pt_selected, metrics_selected_keys,
+                    rolled, "PitcherPitchNo", pt_selected, metrics_selected_keys,
                     color_map, norm_choice, f"{p_window}-pitch", xdt.strftime('%b %d, %Y')
                 )
                 st.plotly_chart(fig, use_container_width=True)
@@ -2059,15 +2059,15 @@ def render_rolling_average_charts_tab():
                     if colname not in rolled.columns:
                         continue
                     fig = px.line(
-                        rolled, x="PitchNo", y=colname, color="PitchType",
+                        rolled, x="PitcherPitchNo", y=colname, color="PitchType",
                         title=f"{k} — {p_window}-pitch Rolling Average ({xdt.strftime('%b %d, %Y')})",
-                        labels={"PitchNo": "Pitch #", colname: k, "PitchType": "Pitch Type"},
+                        labels={"PitcherPitchNo": "Pitch #", colname: k, "PitchType": "Pitch Type"},
                         color_discrete_map=color_map
                     )
                     for pt in rolled["PitchType"].unique():
                         sub = rolled[rolled["PitchType"] == pt]
                         fig.add_scatter(
-                            x=sub["PitchNo"], y=sub[colname], mode="markers",
+                            x=sub["PitcherPitchNo"], y=sub[colname], mode="markers",
                             marker=dict(size=7, color=color_map.get(pt, "black"), opacity=0.7),
                             name=f"{pt} points", showlegend=False
                         )
