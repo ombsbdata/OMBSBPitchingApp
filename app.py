@@ -367,7 +367,7 @@ def load_biomech_workbook() -> pd.DataFrame:
 # Streamlit UI
 # -----------------------------------------------------------------------------------
 # --- Streamlit UI (put this BEFORE applying the filter) ---
-st.title("Pitcher Reports (2025 Season)")
+st.title("Pitcher Reports (2026 Season)")
 st.sidebar.header("Filters")
 
 # ---- Sidebar: Game Type (multi-select) ----
