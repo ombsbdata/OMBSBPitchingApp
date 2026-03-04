@@ -2208,16 +2208,12 @@ with tab_biomech:
                .groupby(["Pitcher", "DateOnly"], dropna=False)
                .size().rename("P").reset_index())
 
-    has_korbb = "KorBB" in df.columns
-    has_playres = "PlayResult" in df.columns
-    if has_korbb or has_playres:
-        df["is_out"] = False
-        if has_korbb:
-            df.loc[df["KorBB"].astype(str).str.strip().str.lower() == "strikeout", "is_out"] = True
-        if has_playres:
-            df.loc[df["PlayResult"].astype(str).str.strip().isin(["Out", "Sacrifice"]), "is_out"] = True
+    if "OutsOnPlay" in df.columns:
+        df["OutsOnPlay"] = pd.to_numeric(df["OutsOnPlay"], errors="coerce").fillna(0)
+        df["K_out"] = (df["KorBB"].astype(str).str.strip().str.lower() == "strikeout").astype(int) if "KorBB" in df.columns else 0
+        df["TotalOuts"] = df["OutsOnPlay"] + df["K_out"]
         grp_outs = (df.assign(DateOnly=df["Date"].dt.date)
-                      .groupby(["Pitcher", "DateOnly"], dropna=False)["is_out"]
+                      .groupby(["Pitcher", "DateOnly"], dropna=False)["TotalOuts"]
                       .sum().rename("Outs").reset_index())
     else:
         grp_outs = pd.DataFrame(columns=["Pitcher", "DateOnly", "Outs"])
