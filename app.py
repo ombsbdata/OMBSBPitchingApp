@@ -1478,6 +1478,7 @@ def generate_by_date_overall_table():
 
 
             gt = day["game_type"].iloc[0]
+            opp = day["BatterTeam"].iloc[0]
 
             in_zone = calculate_in_zone(day) if {"PlateLocHeight","PlateLocSide"}.issubset(day.columns) else day.iloc[0:0]
             swings = day["PitchCall"].isin(swing_flags).sum()
@@ -1523,6 +1524,7 @@ def generate_by_date_overall_table():
             rows.append({
                 "Date": d,
                 "Type": gt,
+                "vs.": opp,
                 "Pitches": int(total),
                 "BIP": int(len(bip_df)),
                 "Strike%": (strikes_all / total * 100),
@@ -1555,7 +1557,7 @@ def generate_by_date_overall_table():
                 out[col] = out[col].apply(lambda v: f"{v:.3f}" if pd.notna(v) else "0.000")
 
         st.subheader("By-Date (Overall) — Pitch Flight Data")
-        cols = ["Date","Type","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%","wOBA","xwOBA"]
+        cols = ["Date","Type","vs.","Pitches","BIP","Strike%","InZone%","Swing%","SwStr%","InZoneWhiff%","FP Strike%","Stuff+","Contact%","GB%","FB%","Soft%","Hard%","wOBA","xwOBA"]
         st.dataframe(format_dataframe(out[cols]), use_container_width=True, hide_index=True)
 
     except Exception as e:
