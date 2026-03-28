@@ -33,9 +33,7 @@ _max_width(1700)  # bump to taste (1600–1800 is nice)
 # -----------------------------------------------------------------------------------
 # Config / constants
 # -----------------------------------------------------------------------------------
-SEASON_FILE = "Fall_2025_wRV_with_stuff.csv"     # main dataset (plays)
-ROLLING_FILE = "Fall_2025_wRV_with_stuff.csv"    # if you truly have a separate rolling file, point it here
-STUFFPLUS_FILE = "Fall_2025_wRV_with_stuff.csv"  # Stuff+ source; can be the same file in your case
+
 
 TEAM_FILTER = "OLE_REB"  # change to None to allow all teams
 
@@ -244,10 +242,26 @@ def load_csv(file_path: str) -> pd.DataFrame:
 # -----------------------------------------------------------------------------------
 # Data
 # -----------------------------------------------------------------------------------
-season_df = load_csv(SEASON_FILE)
-rolling_df = load_csv(ROLLING_FILE)
+GDRIVE_FILE_ID = "1GdMWrFcn02NV8r2eN8evIHPzdhE42D9Y"
+
+@st.cache_data(ttl=3600)
+def load_raw_gdrive():
+    url = f"https://drive.google.com/uc?id={GDRIVE_FILE_ID}"
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        gdown.download(url, tmp.name, quiet=True)
+        df = pd.read_csv(tmp.name, low_memory=False)
+        df = _ensure_date(df, "Date")
+        df = _coerce_numeric(df, NUMERIC_COLS)
+        if "PitchType" not in df.columns:
+            df["PitchType"] = df.apply(canonical_pitch_type, axis=1)
+        if "Season" not in df.columns:
+            df["Season"] = "2025 Season"
+        return df
+
+season_df = load_raw_gdrive()
+rolling_df = season_df.copy()
+stuff_src  = season_df.copy()
 # --- Build stuff_df ONCE, with canonical PitchType and numeric StuffPlus
-stuff_src = load_csv(STUFFPLUS_FILE)  # has PitchType from load_csv()
 if "StuffPlus" in stuff_src.columns:
     stuff_src["StuffPlus"] = pd.to_numeric(stuff_src["StuffPlus"], errors="coerce")
     # keep only the columns we need
