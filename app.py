@@ -2554,7 +2554,9 @@ with tab_biomech:
         for c in df.columns:
             if c in (name_col, "VALD_Player", "Key_LF", "Key_FL", "VALD_DateTime", "VALD_Date", "FP_Tag_clean", "DataSource"):
                 continue
-            df[c] = pd.to_numeric(df[c], errors="ignore")
+            converted = pd.to_numeric(df[c], errors="coerce")
+            if converted.notna().sum() > 0:  # only replace if at least some values converted
+                df[c] = converted
     
         # tell caller which columns to use
         vald_date_col = "VALD_DateTime"     # used by tables + charts
