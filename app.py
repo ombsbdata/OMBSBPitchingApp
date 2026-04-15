@@ -2549,7 +2549,15 @@ with tab_biomech:
         df["VALD_Player"] = df[name_col].astype(str).str.strip()
         df["Key_LF"] = df["VALD_Player"].apply(key_last_first)
         df["Key_FL"] = df["VALD_Player"].apply(key_first_last)
-    
+
+            # ---- manual aliases for name mismatches (JP initials, nicknames, etc.) ----
+        VALD_KEY_ALIASES = {
+            "robertsonjonpaul": "robertsonjp",  # JP Robertson
+            # add more here if needed: "vald_key": "season_key"
+        }
+        df["Key_LF"] = df["Key_LF"].map(lambda k: VALD_KEY_ALIASES.get(k, k))
+        df["Key_FL"] = df["Key_FL"].map(lambda k: VALD_KEY_ALIASES.get(k, k))
+        
         # Make common metric columns numeric (safe convert)
         for c in df.columns:
             if c in (name_col, "VALD_Player", "Key_LF", "Key_FL", "VALD_DateTime", "VALD_Date", "FP_Tag_clean", "DataSource"):
