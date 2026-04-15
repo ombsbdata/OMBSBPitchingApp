@@ -2484,9 +2484,9 @@ with tab_biomech:
         # create a single datetime column VALD_DateTime and also a date-only VALD_Date
         if "Date" in df.columns and "Time" in df.columns:
             dt_raw = df["Date"].astype(str).str.strip() + " " + df["Time"].astype(str).str.strip()
-            dt = pd.to_datetime(dt_raw, errors="coerce", infer_datetime_format=True)
+            dt = pd.to_datetime(dt_raw, errors="coerce")
         elif "Date" in df.columns:
-            dt = pd.to_datetime(df["Date"], errors="coerce", infer_datetime_format=True)
+            dt = pd.to_datetime(df["Date"], errors="coerce")
         else:
             dt = pd.NaT
     
